@@ -1,0 +1,18 @@
+# Credenciais: NUNCA vao para o GitHub
+.env
+.env.*
+!.env.example
+
+# Dados locais (velas, diario de operacoes, relatorios, logs)
+data/
+logs/
+reports/
+
+# Arquivos de ferramenta local
+.claude/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

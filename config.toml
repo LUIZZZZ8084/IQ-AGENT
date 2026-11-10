@@ -1,0 +1,51 @@
+# Configuracao do IQ-AGENT. Edite os valores e rode de novo.
+# O bot comeca SEMPRE na conta demo. A conta real so e usada se a secao [real]
+# permitir E voce confirmar digitando a frase pedida, a cada execucao.
+
+[coleta]
+dias_historico = 30        # quantos dias de velas de 1 minuto manter por ativo
+payout_minimo = 0.70       # ignora ativos pagando menos que isso (0.70 = 70%)
+max_ativos = 30            # limite de ativos acompanhados
+incluir_otc = true         # ativos OTC (fim de semana / precos da corretora)
+ativos = []                # vazio = escolhe sozinho; ou ex.: ["EURUSD", "EURUSD-OTC"]
+pausa_entre_pedidos = 0.2  # segundos entre pedidos ao servidor
+
+[pesquisa]
+# "M1>1" = velas de 1 min, expiracao de 1 min. "M5>5" = velas de 5 min, expiracao 5 min.
+modos = ["M1>1", "M1>5", "M5>5"]
+estrategias = []           # vazio = todas
+n_folds = 5                # quantas janelas de teste fora da amostra
+dias_teste = 3.0           # tamanho de cada janela de teste, em dias
+min_trades_treino = 150    # minimo de operacoes no treino para escolher uma configuracao
+min_trades_teste = 100     # minimo de operacoes fora da amostra para julgar
+fdr_q = 0.10               # taxa maxima de falsas descobertas (Benjamini-Hochberg)
+confianca = 0.95           # confianca do intervalo da taxa de acerto
+slippage_frac = 0.02       # entrada pior que o ideal, em fracao do corpo mediano da vela
+payout_padrao = 0.80       # usado quando o payout do ativo e desconhecido
+
+[risco]
+risco_por_operacao = 0.01  # teto por operacao, em fracao do saldo (0.01 = 1%)
+kelly_fracao = 0.25        # usa 1/4 do Kelly calculado com a taxa de acerto pessimista
+valor_minimo = 1.0         # aposta minima da corretora
+valor_maximo = 50.0        # teto absoluto por operacao
+perda_maxima_diaria = 0.05 # para o dia ao perder 5% do saldo inicial do dia
+meta_diaria = 0.0          # para o dia ao ganhar essa fracao (0 = desligado)
+max_operacoes_dia = 20
+max_perdas_seguidas = 3    # depois disso, pausa
+pausa_apos_perdas_min = 30
+
+[operacao]
+modo_exploracao = false    # true = opera candidatos NAO aprovados com valor minimo (so demo)
+valor_exploracao = 1.0
+max_candidatos_exploracao = 3
+atraso_maximo_s = 6.0      # nao entra se passou disso desde o fechamento da vela
+espera_fechamento_s = 1.0  # espera apos o fechamento da vela antes de ler os dados
+min_ops_para_suspender = 30  # com esse tanto de operacoes ao vivo, suspende o que estiver falhando
+
+[real]
+permitido = false          # true = a chave "conta real" passa a existir no painel e no comando
+exigir_prontidao = true    # so libera a real se o historico na demo cumprir os criterios abaixo
+valor_maximo = 5.0         # teto absoluto por operacao na conta real
+min_operacoes_demo = 100   # operacoes de estrategias aprovadas feitas na demo
+min_dias_demo = 10         # dias diferentes com operacoes na demo
+janela_dias = 60           # periodo da demo considerado na avaliacao

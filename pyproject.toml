@@ -1,0 +1,12 @@
+[project]
+name = "iq-agent"
+version = "0.1.0"
+description = "Pesquisa, backtest e execucao em conta demo para opcoes turbo da IQ Option"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+# O Tk reclama quando o Python limpa variáveis da janela fora da thread principal; é ruído dos testes do painel.
+filterwarnings = ["ignore::pytest.PytestUnraisableExceptionWarning"]
