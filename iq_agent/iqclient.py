@@ -277,7 +277,8 @@ class IQClient:
                 "eu adicionar o suporte."
             )
         if codigo == "invalid_credentials":
-            raise ErroLogin("E-mail ou senha incorretos. Confira o arquivo .env.")
+            raise ErroLogin("E-mail ou senha incorretos. Tente de novo; se você usa o arquivo .env, confira "
+                            "o que está nele.")
         raise ErroLogin(f"Login recusado ({codigo}): {dados.get('message', 'sem detalhe')}")
 
     def _abrir_ws(self) -> None:

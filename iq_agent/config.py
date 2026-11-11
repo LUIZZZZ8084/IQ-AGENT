@@ -18,7 +18,7 @@ class ErroConfig(ValueError):
 class Coleta:
     dias_historico: int = 30
     payout_minimo: float = 0.70
-    max_ativos: int = 30
+    max_ativos: int = 150
     incluir_otc: bool = True
     ativos: list[str] = field(default_factory=list)
     pausa_entre_pedidos: float = 0.2

@@ -11,14 +11,18 @@ TF = 60
 
 
 def escolher_ativos(ativos: list[Ativo], cfg: Coleta, ja_acompanhados: set[str] = frozenset()) -> list[Ativo]:
-    """Ativos turbo a acompanhar: os abertos agora (maior payout primeiro) e os que já têm histórico."""
+    """Ativos turbo a acompanhar: os abertos agora (maior payout primeiro) e os que já têm histórico.
+
+    Se o limite `max_ativos` cortar a lista, o desempate entre payouts iguais favorece
+    quem já tem histórico baixado, para a lista não mudar de um dia para o outro.
+    """
     turbo = [a for a in ativos if a.tipo == "turbo"]
     if cfg.ativos:
         desejados = {n.upper() for n in cfg.ativos}
         return [a for a in turbo if a.nome.upper() in desejados]
     bons = [a for a in turbo if a.payout >= cfg.payout_minimo and (cfg.incluir_otc or not a.eh_otc)]
     candidatos = [a for a in bons if a.aberto or a.nome in ja_acompanhados]
-    candidatos.sort(key=lambda a: (not a.aberto, -a.payout, a.nome))
+    candidatos.sort(key=lambda a: (not a.aberto, -a.payout, a.nome not in ja_acompanhados, a.nome))
     return candidatos[: cfg.max_ativos]
 
 

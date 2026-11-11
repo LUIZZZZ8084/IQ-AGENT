@@ -30,6 +30,16 @@ def test_escolher_ativos():
     assert len(escolher_ativos(ativos, Coleta(max_ativos=1, payout_minimo=0.0), {"EURUSD-OTC"})) == 1
 
 
+def test_escolher_ativos_no_empate_mantem_quem_ja_tem_historico():
+    empatados = [Ativo(i, nome, "turbo", 0.83, True) for i, nome in enumerate(["AAA", "BBB", "EURUSD-OTC", "ZZZ"])]
+    melhor = Ativo(9, "OURO", "turbo", 0.87, True)
+    limite = Coleta(max_ativos=3)
+    assert [a.nome for a in escolher_ativos(empatados + [melhor], limite)] == ["OURO", "AAA", "BBB"]
+    nomes = [a.nome for a in escolher_ativos(empatados + [melhor], limite, {"EURUSD-OTC", "ZZZ"})]
+    assert nomes == ["OURO", "EURUSD-OTC", "ZZZ"]  # payout maior primeiro; no empate, quem já é acompanhado
+    assert len(escolher_ativos(empatados + [melhor], Coleta())) == 5  # o padrão não corta ninguém
+
+
 def test_coleta_grava_so_velas_fechadas_e_depois_so_as_novas(cfg, banco):
     serie = gerar_velas(6 * 1440, semente=4, fim_ts=FIM)
     cfg.coleta.dias_historico = 3
