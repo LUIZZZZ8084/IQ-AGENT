@@ -167,47 +167,69 @@ def diagnosticar(cfg: Config, cliente: IQClient, log: Log) -> bool:
 
 
 def autoteste(log: Log = print) -> bool:
-    """Confere o motor com um mercado SINTÉTICO, em memória. Não toca no banco real.
+    """Confere o motor com um mercado SINTÉTICO, em memória. Não toca no banco real
+    nem nos modelos reais (tudo vai para uma pasta temporária).
 
     Verifica que: (1) em mercados aleatórios nada é aprovado; (2) um padrão plantado de
-    propósito é encontrado; (3) o executor opera o plano e a contabilidade fecha.
+    propósito é encontrado pelas regras; (3) o modelo de aprendizado de máquina também o
+    encontra; (4) o executor opera o plano e a contabilidade fecha.
     """
+    import tempfile
+    from pathlib import Path
+
+    from . import ml
     from .simulado import ClienteSimulado
     from .sintetico import gerar_velas
 
     fim, dias = 1_794_000_000, 22
     corte = fim - 2 * 86400
-    cfg = Config()
-    banco = Banco(":memory:")
-    series = {f"ALEATORIO{i + 1}": gerar_velas(dias * 1440, semente=100 + i, fim_ts=fim) for i in range(4)}
-    series["PLANTADO"] = gerar_velas(dias * 1440, semente=7, fim_ts=fim, reversao_apos=3, forca=0.2)
-    for nome, v in series.items():
-        banco.inserir_serie(nome, v.fechadas_ate(corte))
-    banco.salvar_ativos([Ativo(i + 1, nome, "turbo", 0.85, True) for i, nome in enumerate(sorted(series))], corte)
+    plantado, grupo_plantado = "PLANTADO-OTC", ml.rotulo_grupo("OTC")
+    with tempfile.TemporaryDirectory(prefix="iq_agent_autoteste_") as pasta:
+        cfg = Config()
+        cfg.raiz, cfg.db = Path(pasta), Path(pasta) / "autoteste.db"
+        banco = Banco(":memory:")
+        series = {f"ALEATORIO{i + 1}": gerar_velas(dias * 1440, semente=100 + i, fim_ts=fim) for i in range(4)}
+        series[plantado] = gerar_velas(dias * 1440, semente=7, fim_ts=fim, reversao_apos=3, forca=0.2)
+        for nome, v in series.items():
+            banco.inserir_serie(nome, v.fechadas_ate(corte))
+        banco.salvar_ativos([Ativo(i + 1, nome, "turbo", 0.85, True) for i, nome in enumerate(sorted(series))],
+                            corte)
 
-    inicio = time.time()
-    r = pesquisar(banco, cfg, log=lambda _: None, agora=corte)
-    aprovadas = [h for h in r["hipoteses"] if h["aprovado"]]
-    falsas = [h for h in aprovadas if h["ativo"] != "PLANTADO"]
-    achou = [h for h in aprovadas if h["ativo"] == "PLANTADO"]
-    log(f"Pesquisa: {r['resumo']['hipoteses']} hipóteses em {time.time() - inicio:.1f}s")
-    ok1 = not falsas
-    log(f"[{'OK' if ok1 else 'FALHA'}] mercados aleatórios: {len(falsas)} aprovação(ões) falsa(s)")
-    ok2 = bool(achou)
-    for h in achou:
-        log(f"       achou {h['modo']} {h['estrategia']} {h['config']['params']}: {h['taxa']:.1%} em {h['n']} operações")
-    log(f"[{'OK' if ok2 else 'FALHA'}] padrão plantado {'encontrado' if ok2 else 'NÃO encontrado'}")
+        inicio = time.time()
+        r = pesquisar(banco, cfg, log=lambda _: None, agora=corte)
+        aprovadas = [h for h in r["hipoteses"] if h["aprovado"]]
+        falsas = [h for h in aprovadas if h["ativo"] not in (plantado, grupo_plantado)]
+        achou = [h for h in aprovadas if h["ativo"] == plantado]
+        modelo = [h for h in aprovadas if h["estrategia"] == ml.NOME and h["ativo"] == grupo_plantado]
+        log(f"Pesquisa: {r['resumo']['hipoteses']} hipóteses em {time.time() - inicio:.1f}s")
+        ok1 = not falsas
+        log(f"[{'OK' if ok1 else 'FALHA'}] mercados aleatórios: {len(falsas)} aprovação(ões) falsa(s)")
+        ok2 = bool(achou)
+        for h in achou:
+            log(f"       achou {h['modo']} {h['estrategia']} {h['config']['params']}: {h['taxa']:.1%} em "
+                f"{h['n']} operações")
+        log(f"[{'OK' if ok2 else 'FALHA'}] padrão plantado {'encontrado' if ok2 else 'NÃO encontrado'} pelas regras")
+        if not cfg.ml.ativo or not ml.disponivel():
+            ok_modelo = True
+            log("[--] modelo de aprendizado de máquina não testado (scikit-learn ausente ou [ml] desligado)")
+        else:
+            ok_modelo = bool(modelo)
+            for h in modelo:
+                log(f"       modelo {h['modo']}: {h['taxa']:.1%} em {h['n']} operações, limiar "
+                    f"{h['config']['params']['limiar']:.0%}")
+            log(f"[{'OK' if ok_modelo else 'FALHA'}] padrão plantado "
+                f"{'encontrado' if ok_modelo else 'NÃO encontrado'} pelo modelo de aprendizado de máquina")
 
-    cliente = ClienteSimulado(series, inicio_ts=corte)
-    cliente.conectar()
-    saldo_inicial = cliente.saldo_demo().valor
-    resumo = Executor(cfg, banco, cliente, r["plano"], log=lambda _: None).rodar(minutos=2 * 1440 - 30)
-    saldo_final = cliente.saldo_demo().valor
-    diario = [o for o in banco.operacoes(conta="PRACTICE") if o["status"] in ("win", "loss", "equal")]
-    ok3 = (resumo["operacoes"] > 0 and len(diario) == resumo["operacoes"]
-           and abs((saldo_final - saldo_inicial) - resumo["lucro"]) < 0.05)
-    log(f"[{'OK' if ok3 else 'FALHA'}] executor simulado: {resumo['operacoes']} operações, "
-        f"{resumo['vitorias']} ganhos, resultado {resumo['lucro']:+.2f}, contabilidade "
-        f"{'fecha' if ok3 else 'NÃO fecha'}")
-    banco.fechar()
-    return ok1 and ok2 and ok3
+        cliente = ClienteSimulado(series, inicio_ts=corte)
+        cliente.conectar()
+        saldo_inicial = cliente.saldo_demo().valor
+        resumo = Executor(cfg, banco, cliente, r["plano"], log=lambda _: None).rodar(minutos=2 * 1440 - 30)
+        saldo_final = cliente.saldo_demo().valor
+        diario = [o for o in banco.operacoes(conta="PRACTICE") if o["status"] in ("win", "loss", "equal")]
+        ok3 = (resumo["operacoes"] > 0 and len(diario) == resumo["operacoes"]
+               and abs((saldo_final - saldo_inicial) - resumo["lucro"]) < 0.05)
+        log(f"[{'OK' if ok3 else 'FALHA'}] executor simulado: {resumo['operacoes']} operações, "
+            f"{resumo['vitorias']} ganhos, resultado {resumo['lucro']:+.2f}, contabilidade "
+            f"{'fecha' if ok3 else 'NÃO fecha'}")
+        banco.fechar()
+    return ok1 and ok2 and ok_modelo and ok3

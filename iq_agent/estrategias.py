@@ -215,6 +215,7 @@ NOMES_CURTOS = {
     "rsi_reversao": "RSI", "bollinger_reversao": "Bollinger", "ema_tendencia": "Média (tendência)",
     "sequencia": "Sequência", "mhi": "MHI", "engolfo": "Engolfo", "estocastico_reversao": "Estocástico",
     "candle_forca": "Vela de força", "macd_cruzamento": "MACD", "padrao_cores": "Padrão de velas",
+    "modelo_ml": "Modelo de máquina",
 }
 
 # Quantas velas de histórico as estratégias precisam para os indicadores estabilizarem.

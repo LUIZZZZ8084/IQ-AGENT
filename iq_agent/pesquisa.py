@@ -56,10 +56,22 @@ class Hipotese:
     testavel: bool = False
     aprovado: bool = False
     situacao: str = ""
+    detalhe: dict | None = None  # dados extras (ex.: ativos de um grupo do modelo de aprendizado de máquina)
 
     @property
     def n(self) -> int:
         return self.vitorias + self.derrotas
+
+
+def preencher_estatisticas(h: Hipotese, z: float, pq: Pesquisa) -> None:
+    """Calcula taxa, intervalo, p-valor e valor esperado a partir do placar fora da amostra."""
+    if h.n > 0:
+        h.taxa = h.vitorias / h.n
+        h.wilson_inf, h.wilson_sup = wilson(h.vitorias, h.n, z)
+        h.p_valor = p_valor_binomial(h.vitorias, h.n, h.breakeven)
+        h.ev = valor_esperado(h.taxa, h.payout)
+        h.ev_inf = valor_esperado(h.wilson_inf, h.payout)
+    h.testavel = h.n >= pq.min_trades_teste
 
 
 def limites_folds(ts_ini: int, ts_fim: int, n_folds: int, dias_teste: float) -> np.ndarray | None:
@@ -144,13 +156,7 @@ def _julgar(ativo: str, modo: str, estrategia: str, payout: float, p0: float, z:
         h.treino_n = int(ac_vit[c, n_folds] + ac_der[c, n_folds])
         h.treino_taxa = float(ac_vit[c, n_folds] / h.treino_n)
 
-    if h.n > 0:
-        h.taxa = h.vitorias / h.n
-        h.wilson_inf, h.wilson_sup = wilson(h.vitorias, h.n, z)
-        h.p_valor = p_valor_binomial(h.vitorias, h.n, p0)
-        h.ev = valor_esperado(h.taxa, payout)
-        h.ev_inf = valor_esperado(h.wilson_inf, payout)
-    h.testavel = h.n >= pq.min_trades_teste
+    preencher_estatisticas(h, z, pq)
     return h
 
 
@@ -183,17 +189,53 @@ def _entrada(h: Hipotese, tipo: str) -> dict:
     }
 
 
-def montar_plano(hipoteses: list[Hipotese], max_exploracao: int) -> list[dict]:
+def _entradas_do_modelo(h: Hipotese, tipo: str, info_ativos: dict | None, limite: int) -> list[dict]:
+    """Uma hipótese do modelo vale para um grupo de ativos: vira uma entrada por ativo,
+    começando pelos abertos de maior payout."""
+    tf_min, exp_min = interpretar_modo(h.modo)
+    info_ativos = info_ativos or {}
+    nomes = (h.detalhe or {}).get("ativos", [])
+    candidatos = sorted(nomes, key=lambda a: (not (info_ativos[a].aberto if a in info_ativos else False),
+                                              -(info_ativos[a].payout if a in info_ativos else h.payout), a))
+    entradas = []
+    for ativo in candidatos[:limite]:
+        payout = info_ativos[ativo].payout if ativo in info_ativos and info_ativos[ativo].payout > 0 else h.payout
+        entradas.append({
+            "tipo": tipo, "ativo": ativo, "modo": h.modo, "tf": tf_min * 60, "exp_min": exp_min,
+            "estrategia": h.estrategia, "params": h.config["params"], "sessao": h.config["sessao"],
+            "vol": h.config["vol"], "payout": payout, "breakeven": breakeven(payout), "n_teste": h.n,
+            "taxa": h.taxa, "p_inf": h.wilson_inf, "ev": valor_esperado(h.taxa, payout),
+            "ev_inf": valor_esperado(h.wilson_inf, payout), "q_valor": h.q_valor, "grupo": h.ativo,
+        })
+    return entradas
+
+
+def montar_plano(hipoteses: list[Hipotese], max_exploracao: int, info_ativos: dict | None = None,
+                 max_ativos_modelo: int = 10) -> list[dict]:
     """Entradas do plano: primeiro as aprovadas, depois as candidatas de exploração (só demo)."""
+    from .ml import NOME as MODELO
+
     aprovadas = sorted((h for h in hipoteses if h.aprovado), key=lambda h: h.ev_inf, reverse=True)
     candidatas = sorted((h for h in hipoteses if h.testavel and not h.aprovado and h.config is not None),
                         key=lambda h: h.ev, reverse=True)[:max_exploracao]
-    return [_entrada(h, "aprovado") for h in aprovadas] + [_entrada(h, "exploracao") for h in candidatas]
+    plano = []
+    for tipo, lista, limite in (("aprovado", aprovadas, max_ativos_modelo), ("exploracao", candidatas, 2)):
+        for h in lista:
+            if h.estrategia == MODELO:
+                plano += _entradas_do_modelo(h, tipo, info_ativos, limite)
+            else:
+                plano.append(_entrada(h, tipo))
+    return plano
 
 
 def pesquisar(banco: Banco, cfg: Config, log: Callable[[str], None] = print,
-              agora: float | None = None) -> dict:
-    """Roda a pesquisa em todos os ativos com velas no banco e grava o resultado."""
+              agora: float | None = None, salvar: bool = True) -> dict:
+    """Roda a pesquisa em todos os ativos com velas no banco e grava o resultado.
+
+    Com `salvar=False` é um ensaio: nada é gravado no banco (o plano do bot não muda).
+    """
+    from . import ml
+
     pq = cfg.pesquisa
     agora = agora if agora is not None else time.time()
     estrategias = pq.estrategias or list(ESTRATEGIAS)
@@ -207,23 +249,47 @@ def pesquisar(banco: Banco, cfg: Config, log: Callable[[str], None] = print,
     hipoteses: list[Hipotese] = []
     total_velas, ts_min, ts_max, usados = 0, None, None, 0
     nomes = banco.ativos_com_velas(60)
-    for i, ativo in enumerate(nomes, 1):
-        v1 = banco.carregar_velas(ativo, 60, desde)
-        if len(v1) < MIN_VELAS:
-            log(f"  [{i}/{len(nomes)}] {ativo}: poucos dados ({len(v1)} velas), pulando")
-            continue
-        info = info_ativos.get(ativo)
-        payout = info.payout if info and info.payout > 0 else pq.payout_padrao
-        antes = len(hipoteses)
-        for tf_min, exp_min in modos:
-            v = v1 if tf_min == 1 else v1.reamostrar(tf_min * 60)
-            hipoteses.extend(avaliar_modo(ativo, v, tf_min, exp_min, payout, pq, estrategias))
-        usados += 1
-        total_velas += len(v1)
-        ts_min = int(v1.ts[0]) if ts_min is None else min(ts_min, int(v1.ts[0]))
-        ts_max = int(v1.ts[-1]) if ts_max is None else max(ts_max, int(v1.ts[-1]))
-        log(f"  [{i}/{len(nomes)}] {ativo}: {len(v1)} velas, payout {payout:.0%}, "
-            f"{len(hipoteses) - antes} hipóteses")
+    modelo = None
+    if cfg.ml.ativo and ml.disponivel():
+        modelo = ml.PesquisaML(pq, cfg.ml, nomes, cfg.dir_modelos, log)
+    elif cfg.ml.ativo:
+        log("Modelo de aprendizado de máquina desligado: falta a biblioteca scikit-learn (rode instalar.bat).")
+    try:
+        for i, ativo in enumerate(nomes, 1):
+            v1 = banco.carregar_velas(ativo, 60, desde)
+            if len(v1) < MIN_VELAS:
+                log(f"  [{i}/{len(nomes)}] {ativo}: poucos dados ({len(v1)} velas), pulando")
+                continue
+            info = info_ativos.get(ativo)
+            payout = info.payout if info and info.payout > 0 else pq.payout_padrao
+            antes = len(hipoteses)
+            for tf_min, exp_min in modos:
+                v = v1 if tf_min == 1 else v1.reamostrar(tf_min * 60)
+                hipoteses.extend(avaliar_modo(ativo, v, tf_min, exp_min, payout, pq, estrategias))
+            if modelo is not None:
+                modelo.adicionar(ativo, v1, payout)
+            usados += 1
+            total_velas += len(v1)
+            ts_min = int(v1.ts[0]) if ts_min is None else min(ts_min, int(v1.ts[0]))
+            ts_max = int(v1.ts[-1]) if ts_max is None else max(ts_max, int(v1.ts[-1]))
+            log(f"  [{i}/{len(nomes)}] {ativo}: {len(v1)} velas, payout {payout:.0%}, "
+                f"{len(hipoteses) - antes} hipóteses")
+        if modelo is not None:
+            log("Treinando o modelo de aprendizado de máquina nas velas reais (leva alguns minutos)...")
+            do_modelo = modelo.avaliar()
+            hipoteses.extend(do_modelo)
+            for h in do_modelo:
+                if h.n:
+                    acerto = f"{h.taxa:.1%} em {h.n} operações fora da amostra"
+                else:
+                    amplo = ml.diagnostico_amplo(h.detalhe)
+                    acerto = "ficou de fora em todas as janelas" + (
+                        f"; se operasse sempre no limiar {amplo['limiar']:.0%}, teria acertado {amplo['taxa']:.1%} "
+                        f"em {amplo['n']} operações fora da amostra" if amplo else "")
+                log(f"  Modelo, {h.ativo} {h.modo}: {acerto} (precisa de {h.breakeven:.1%})")
+    finally:
+        if modelo is not None:
+            modelo.fechar()
 
     finalizar(hipoteses, pq)
     testaveis = [h for h in hipoteses if h.testavel]
@@ -239,7 +305,9 @@ def pesquisar(banco: Banco, cfg: Config, log: Callable[[str], None] = print,
     }
     run_id = datetime.fromtimestamp(agora, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     plano = {"run_id": run_id, "gerado_em": int(agora),
-             "entradas": montar_plano(hipoteses, cfg.operacao.max_candidatos_exploracao)}
+             "entradas": montar_plano(hipoteses, cfg.operacao.max_candidatos_exploracao, info_ativos,
+                                      cfg.ml.max_ativos_plano)}
     registro = [asdict(h) | {"n": h.n} for h in hipoteses]
-    banco.salvar_pesquisa(run_id, agora, resumo, registro, plano)
+    if salvar:
+        banco.salvar_pesquisa(run_id, agora, resumo, registro, plano)
     return {"run_id": run_id, "ts": int(agora), "resumo": resumo, "hipoteses": registro, "plano": plano}

@@ -56,17 +56,39 @@ def cmd_coletar(cfg, args, log) -> int:
 def cmd_pesquisar(cfg, args, log) -> int:
     from .pesquisa import pesquisar
 
-    banco = Banco(cfg.db)
+    import dataclasses
+    import tempfile
+    from pathlib import Path
+
+    ensaio = getattr(args, "ensaio", False)
+    if not Path(cfg.db).exists():
+        log("Não há velas no banco. Rode 'diario' (ou 'coletar') primeiro para baixar o histórico real.")
+        return 1
+    banco = Banco(cfg.db, somente_leitura=ensaio)
+    pasta = tempfile.TemporaryDirectory(prefix="iq_agent_ensaio_") if ensaio else None
     try:
         if not banco.ativos_com_velas(60):
             log("Não há velas no banco. Rode 'diario' (ou 'coletar') primeiro para baixar o histórico real.")
             return 1
-        r = pesquisar(banco, cfg, log)["resumo"]
+        if ensaio:
+            # o banco é aberto só para leitura e os modelos do ensaio vão para uma pasta temporária
+            cfg = dataclasses.replace(cfg, db=Path(pasta.name) / "ensaio.db")
+            log("Ensaio: nada é gravado. O plano do bot e os modelos em uso não mudam.")
+        resultado = pesquisar(banco, cfg, log, salvar=not ensaio)
+        r = resultado["resumo"]
         log(f"Pesquisa concluída: {r['hipoteses']} hipóteses, {r['testaveis']} com dados suficientes, "
             f"{r['aprovadas']} aprovada(s).")
+        if ensaio:
+            fortes = sorted((h for h in resultado["hipoteses"] if h["testavel"]), key=lambda h: h["p_valor"])[:8]
+            log("As mais fortes (acerto fora da amostra / necessário):")
+            for h in fortes:
+                log(f"  {h['ativo']} {h['modo']} {h['estrategia']}: {h['taxa']:.1%} em {h['n']} operações / "
+                    f"{h['breakeven']:.1%} | {h['situacao']}")
         return 0
     finally:
         banco.fechar()
+        if pasta is not None:
+            pasta.cleanup()
 
 
 def cmd_relatorio(cfg, args, log) -> int:
@@ -162,7 +184,10 @@ def montar_parser() -> argparse.ArgumentParser:
     sub.add_parser("diagnostico", help="confere login, saldos, ativos e velas").set_defaults(func=cmd_diagnostico)
     sub.add_parser("diario", help="baixa dados reais, pesquisa e gera o relatório").set_defaults(func=cmd_diario)
     sub.add_parser("coletar", help="só baixa os dados reais").set_defaults(func=cmd_coletar)
-    sub.add_parser("pesquisar", help="só refaz a pesquisa com os dados já baixados").set_defaults(func=cmd_pesquisar)
+    pesq = sub.add_parser("pesquisar", help="só refaz a pesquisa com os dados já baixados")
+    pesq.add_argument("--ensaio", action="store_true",
+                      help="roda sem gravar nada: o plano do bot e os modelos em uso não mudam")
+    pesq.set_defaults(func=cmd_pesquisar)
     rel = sub.add_parser("relatorio", help="gera o relatório HTML")
     rel.add_argument("--abrir", action="store_true", help="abre no navegador")
     rel.set_defaults(func=cmd_relatorio)

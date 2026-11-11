@@ -13,6 +13,7 @@ from .cenario import Cenario, ler
 from .config import Config
 from .estatistica import breakeven, wilson, z_unilateral
 from .estrategias import NOMES_CURTOS
+from . import ml
 from .filtros import SESSOES
 
 MAX_GRAFICO = 12
@@ -56,7 +57,7 @@ def _sessao(nome: str) -> str:
 def _config(cfg: dict | None) -> str:
     if not cfg:
         return "–"
-    partes = [f"{k}={v}" for k, v in cfg.get("params", {}).items()]
+    partes = [f"{k}={v}" for k, v in cfg.get("params", {}).items() if k != "arquivo"]  # caminho do modelo: ruído
     if cfg.get("vol") and cfg["vol"] != "qualquer":
         partes.append(f"volatilidade {cfg['vol']}")
     return ", ".join(partes) or "padrão"
@@ -418,7 +419,8 @@ def _bloco_conta(titulo: str, placar: dict, pesquisa: dict | None, cfg: Config, 
     for chave, lista in sorted(grupos.items(), key=lambda kv: -len(kv[1])):
         decididas = [o for o in lista if o["status"] != "equal"]
         n, vit = len(decididas), sum(o["status"] == "win" for o in decididas)
-        h = esperado.get(chave)
+        # o modelo de máquina é avaliado por grupo de ativos, não por ativo
+        h = esperado.get(chave) or esperado.get((ml.rotulo_grupo(ml.grupo_de(chave[0])), chave[1], chave[2]))
         alvo = h["taxa"] if h and h.get("taxa") is not None else None
         equilibrio = sum(breakeven(float(o["payout"])) for o in decididas) / n if n else None
         if n < 20:
@@ -454,6 +456,42 @@ def _bloco_conta(titulo: str, placar: dict, pesquisa: dict | None, cfg: Config, 
         + _tabela(["Quando", "Ativo", "Direção", "Estratégia", "Tipo", "Valor", "Situação", "Resultado"],
                   ultimas, {5, 7})
         + "</section>")
+
+
+def _bloco_modelo(pesquisa: dict) -> str:
+    """Resultado do modelo de aprendizado de máquina, um por grupo de ativos e por modo."""
+    hipoteses = [h for h in pesquisa["hipoteses"] if h["estrategia"] == ml.NOME]
+    if not hipoteses:
+        return ""
+    linhas = []
+    for h in sorted(hipoteses, key=lambda h: (h["ativo"], h["modo"])):
+        detalhe = h.get("detalhe") or {}
+        limiar = (h.get("config") or {}).get("params", {}).get("limiar")
+        if h["aprovado"]:
+            situacao = _selo("bom", "aprovado")
+        elif h["n"] == 0:
+            situacao = _e("ficou de fora: nenhum limiar mostrou vantagem na validação")
+        else:
+            situacao = _e(h["situacao"])
+        amplo = ml.diagnostico_amplo(detalhe)
+        diagnostico = (f"{_pct(amplo['taxa'])} em {_num(amplo['n'], 0)} (limiar {_pct(amplo['limiar'], 0)})"
+                       if amplo else "–")
+        linhas.append([
+            _e(h["ativo"]), _e(h["modo"]), _num(len(detalhe.get("ativos", [])), 0),
+            f"{h['folds_ativos']} de {h['folds']}", _num(h["n"], 0), _pct(h["taxa"]), _pct(h["wilson_inf"]),
+            _pct(h["breakeven"]), _pct(limiar, 0) if limiar else "–", _e(diagnostico), situacao,
+        ])
+    tabela = _tabela(["Grupo", "Modo", "Ativos", "Janelas em que operou", "Operações", "Acerto", "Pior caso",
+                      "Breakeven", "Limiar de hoje", "Se operasse sempre", "Situação"], linhas, {2, 3, 4, 5, 6, 7, 8})
+    nota = ("O modelo é treinado nas velas reais de todos os ativos do grupo e só opera quando a chance estimada "
+            "passa do limiar. Ele é julgado pelo mesmo teste das regras: só contam as janelas que ele não viu no "
+            "treino. “Ficou de fora” significa que, na validação, ele não mostrou vantagem suficiente para operar. "
+            "“Se operasse sempre” é só um diagnóstico: o acerto fora da amostra no limiar com mais operações, "
+            "mesmo nas janelas em que ele ficou de fora. Compare com o breakeven para ver a distância. Perto de "
+            "50% é cara ou coroa.")
+    return ('<section class="cartao" id="modelo"><h2>Modelo de aprendizado de máquina</h2>'
+            f'<p class="sub">Treinado no seu computador, com as velas reais</p>{tabela}'
+            f'<p class="nota">{_e(nota)}</p></section>')
 
 
 def _bloco_todas(pesquisa: dict) -> str:
@@ -564,7 +602,7 @@ def montar_html(pesquisa: dict | None, operacoes: list[dict], cenarios: list[Cen
     real = _placar([o for o in operacoes if o["conta"] == "REAL"])
     blocos = [_bloco_veredito(pesquisa), _bloco_kpis(pesquisa, demo, real)]
     if pesquisa:
-        blocos += [_bloco_plano(pesquisa, cfg), _bloco_margens(pesquisa)]
+        blocos += [_bloco_plano(pesquisa, cfg), _bloco_modelo(pesquisa), _bloco_margens(pesquisa)]
     blocos.append(_bloco_cenarios(cenarios, pesquisa))
     if pesquisa:
         blocos.append(_bloco_distribuicao(pesquisa))
