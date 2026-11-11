@@ -20,12 +20,15 @@ from .config import Config
 from .estatistica import wilson, z_unilateral
 from .estrategias import ESTRATEGIAS, VELAS_AQUECIMENTO
 from .filtros import mascara_vol, razao_vol, sessao_inclui
+from .iqclient import expiracao_turbo
 from .risco import GestorRisco
 from .tipos import Ativo, ErroIQ, OrdemRecusada, Resultado
 from .velas import Velas
 
 ATUALIZAR_ATIVOS_S = 600
 MAX_FALHAS_SEGUIDAS = 10
+MAX_ORDENS_COM_PROBLEMA = 5  # ordens seguidas recusadas ou sem confirmação antes de parar o bot
+CASTIGO_ATIVO_S = 1800  # depois de um problema, o ativo fica esse tempo sem novas tentativas
 ROTULO_CONTA = {"PRACTICE": "DEMO", "REAL": "REAL"}
 
 
@@ -124,6 +127,8 @@ class Executor:
         self._ativos_em = -math.inf
         self._saldo = 0.0
         self._ultimo_aviso = ""
+        self._ordens_com_problema = 0
+        self._castigo: dict[str, float] = {}  # ativo -> instante até o qual não tentar de novo
         self.resumo = {"operacoes": 0, "vitorias": 0, "derrotas": 0, "empates": 0, "lucro": 0.0}
 
     # ------------------------------------------------------------ preparação
@@ -266,6 +271,7 @@ class Executor:
                     self._dormir(c.agora() + min(60, 5 * falhas))
                     try:
                         c.garantir()
+                        self._saldo = c.saldo_ativo(atualizar=True).valor  # o saldo pode ter mudado na queda
                     except ErroIQ as exc2:
                         self.log(f"Reconexão falhou: {exc2}")
             if self.parar.is_set():
@@ -286,7 +292,8 @@ class Executor:
             self._avisar(f"Sem operar: {decisao.motivo}")
             return
         elegiveis = [e for e in entradas
-                     if fronteira % e.tf == 0 and sessao_inclui(e.sessao, fronteira) and e.ativo in self._vivos]
+                     if fronteira % e.tf == 0 and sessao_inclui(e.sessao, fronteira) and e.ativo in self._vivos
+                     and c.agora() >= self._castigo.get(e.ativo, 0.0)]
         if not elegiveis:
             return
         ids = sorted({self._vivos[e.ativo].id for e in elegiveis})
@@ -332,22 +339,64 @@ class Executor:
         comum = dict(ts_sinal=fronteira, conta=self.conta, tipo=e.tipo, ativo=e.ativo, modo=e.modo,
                      estrategia=e.estrategia, config=e.config, direcao=lado, valor=valor, payout=ativo.payout,
                      saldo_antes=self._saldo, atraso_s=round(atraso, 2), run_id=self.plano.get("run_id"))
+        envio = c.agora()
         try:
             ordem = c.abrir_opcao(ativo, lado, valor, e.exp_min)
         except OrdemRecusada as exc:
-            self.log(f"{rotulo}: ordem recusada ({exc})")
+            self.log(f"{rotulo}: ordem recusada pela corretora ({exc})")
             self.banco.registrar_operacao(**comum, status="recusada", lucro=0.0, erro=str(exc)[:300])
+            self._problema_na_ordem(e.ativo)
             return False
+        except ErroIQ as exc:
+            return self._ordem_sem_confirmacao(e, ativo, valor, rotulo, comum, envio, exc, gestor)
+        self._ordens_com_problema = 0
         self.log(f"[{ROTULO_CONTA[self.conta]}] Aberta: {rotulo} valor {valor:.2f}, payout {ativo.payout:.0%}, "
                  f"atraso {atraso:.1f}s")
         resultado = c.aguardar_resultado(ordem)
         status, lucro, fonte, saldo_depois = self._fechar_contas(resultado, valor, ativo.payout)
-        self.banco.registrar_operacao(**comum, ts_ordem=ordem.aberta_em, expiracao=ordem.expiracao,
-                                      opcao_id=ordem.id, status=status, lucro=lucro, saldo_depois=saldo_depois,
-                                      fonte=fonte)
+        self._registrar_resultado(comum, ordem.id, ordem.aberta_em, ordem.expiracao, status, lucro, fonte,
+                                  saldo_depois, gestor)
+        return True
+
+    def _problema_na_ordem(self, ativo: str) -> None:
+        """Conta ordens seguidas com problema. O ativo descansa; se o problema se repete, o bot para."""
+        self._castigo[ativo] = self.cliente.agora() + CASTIGO_ATIVO_S
+        self._ordens_com_problema += 1
+        if self._ordens_com_problema >= MAX_ORDENS_COM_PROBLEMA:
+            raise _Abortar(f"{MAX_ORDENS_COM_PROBLEMA} ordens seguidas não foram aceitas pela corretora. "
+                           "Veja os motivos nas linhas acima.")
+        self.log(f"  {ativo} fica {CASTIGO_ATIVO_S // 60} minutos sem novas tentativas.")
+
+    def _ordem_sem_confirmacao(self, e: Entrada, ativo: Ativo, valor: float, rotulo: str, comum: dict,
+                               envio: float, exc: Exception, gestor: GestorRisco) -> bool:
+        """A corretora não confirmou a abertura. A ordem pode ter entrado ou não: o saldo decide."""
+        c = self.cliente
+        self.log(f"{rotulo}: a corretora não confirmou a ordem ({exc}). Conferindo pelo saldo se ela entrou...")
+        c.garantir()
+        saldo_agora = c.saldo_ativo(atualizar=True).valor
+        if abs((self._saldo - saldo_agora) - valor) > max(0.02, 0.02 * valor):
+            self.log("  O saldo não mudou: a ordem não entrou.")
+            self.banco.registrar_operacao(**comum, status="falhou", lucro=0.0, erro=str(exc)[:300])
+            self._problema_na_ordem(e.ativo)
+            return False
+        expiracao = expiracao_turbo(envio, e.exp_min)
+        self.log(f"  O saldo caiu {valor:.2f}: a ordem entrou. Aguardando o resultado...")
+        c.dormir_ate(expiracao + 20)
+        sem_mensagem = Resultado("desconhecido", 0.0, "sem-mensagem")
+        status, lucro, fonte, saldo_depois = self._fechar_contas(sem_mensagem, valor, ativo.payout)
+        self._ordens_com_problema = 0
+        self._registrar_resultado(comum, None, envio, expiracao, status, lucro,
+                                  f"{fonte}; ordem sem confirmação", saldo_depois, gestor)
+        return True
+
+    def _registrar_resultado(self, comum: dict, opcao_id: int | None, ts_ordem: float, expiracao: int, status: str,
+                             lucro: float, fonte: str, saldo_depois: float, gestor: GestorRisco) -> None:
+        """Anota a operação encerrada no diário e atualiza o gestor de risco e o resumo."""
+        self.banco.registrar_operacao(**comum, ts_ordem=ts_ordem, expiracao=expiracao, opcao_id=opcao_id,
+                                      status=status, lucro=lucro, saldo_depois=saldo_depois, fonte=fonte)
         self._saldo = saldo_depois
         if status in ("win", "loss", "equal"):
-            gestor.registrar(status, lucro, c.agora())
+            gestor.registrar(status, lucro, self.cliente.agora())
             r = self.resumo
             r["operacoes"] += 1
             r["lucro"] = round(r["lucro"] + lucro, 2)
@@ -355,7 +404,6 @@ class Executor:
         nome = {"win": "GANHOU", "loss": "PERDEU", "equal": "EMPATE"}.get(status, "INDEFINIDO")
         self.log(f"  {nome} {lucro:+.2f} | saldo {saldo_depois:.2f} | dia {gestor.lucro:+.2f} "
                  f"em {gestor.operacoes} operações")
-        return True
 
     def _fechar_contas(self, resultado: Resultado, valor: float, payout: float) -> tuple[str, float, str, float]:
         """Lê o saldo após a expiração (com algumas tentativas, pois a liquidação pode atrasar)."""

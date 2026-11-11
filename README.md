@@ -28,6 +28,15 @@ sozinho, primeiro na conta demo e, quando você liberar, na conta real.
 5. Clique em **Abrir relatório** para ver o plano do dia.
 6. Clique em **2. Iniciar bot**. Ele opera na conta demo até você clicar em **Parar bot**.
 
+As opções abaixo dos botões valem no momento da partida:
+
+- **Exploração** (vem marcada): nos dias em que a pesquisa não aprova nenhuma estratégia,
+  é ela que faz o bot operar na demo, com valor mínimo, nas melhores candidatas. Serve
+  para treinar e conferir a execução; essas candidatas não têm vantagem comprovada.
+- **Contínuo** (vem marcada): o bot fica rodando e refaz a pesquisa a cada novo dia.
+- **Só simular** (vem desmarcada): com ela marcada o bot **não envia ordens**, só mostra
+  o que faria. A faixa do topo fica cinza e o botão vira "Iniciar simulação".
+
 Se preferir não digitar o login toda vez, copie `.env.example` para `.env` e preencha.
 O `.env` nunca vai para o GitHub.
 
@@ -127,3 +136,5 @@ Use `iq.bat` na pasta do projeto:
 - Contas com verificação em duas etapas ainda não são suportadas.
 - Uma operação por vez. Não opere manualmente na mesma conta enquanto o bot roda: a
   conferência do resultado usa o saldo.
+- Se a corretora recusar uma ordem ou não confirmar a abertura, o bot anota o motivo,
+  deixa o ativo 30 minutos sem novas tentativas e, depois de 5 problemas seguidos, para.

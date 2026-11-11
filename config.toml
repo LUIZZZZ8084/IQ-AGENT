@@ -35,9 +35,9 @@ max_perdas_seguidas = 3    # depois disso, pausa
 pausa_apos_perdas_min = 30
 
 [operacao]
-modo_exploracao = false    # true = opera candidatos NAO aprovados com valor minimo (so demo)
-valor_exploracao = 1.0
-max_candidatos_exploracao = 3
+modo_exploracao = true     # true = na demo, opera tambem candidatos NAO aprovados, com valor minimo
+valor_exploracao = 1.0     # valor de cada operacao de exploracao (sobe para a aposta minima do ativo)
+max_candidatos_exploracao = 6  # quantos candidatos de exploracao entram no plano do dia
 atraso_maximo_s = 6.0      # nao entra se passou disso desde o fechamento da vela
 espera_fechamento_s = 1.0  # espera apos o fechamento da vela antes de ler os dados
 min_ops_para_suspender = 30  # com esse tanto de operacoes ao vivo, suspende o que estiver falhando
