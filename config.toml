@@ -5,7 +5,7 @@
 [coleta]
 dias_historico = 30        # quantos dias de velas de 1 minuto manter por ativo
 payout_minimo = 0.70       # ignora ativos pagando menos que isso (0.70 = 70%)
-max_ativos = 30            # limite de ativos acompanhados
+max_ativos = 150           # limite de ativos acompanhados (150 cobre todos os abertos; maximo 200)
 incluir_otc = true         # ativos OTC (fim de semana / precos da corretora)
 ativos = []                # vazio = escolhe sozinho; ou ex.: ["EURUSD", "EURUSD-OTC"]
 pausa_entre_pedidos = 0.2  # segundos entre pedidos ao servidor

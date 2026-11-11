@@ -21,8 +21,10 @@ sozinho, primeiro na conta demo e, quando você liberar, na conta real.
 2. Dê dois cliques em `IQ-AGENT.bat`. Abre o painel de controle.
 3. Clique em **Diagnóstico**. O painel pede o e-mail e a senha da IQ Option (ficam só na
    memória, até você fechar a janela) e confere login, saldos, ativos e velas.
-4. Clique em **1. Atualizar mercado**. Na primeira vez leva de 10 a 15 minutos: ele baixa
-   30 dias de velas reais de 1 minuto de até 30 ativos e roda a pesquisa.
+4. Clique em **1. Atualizar mercado**. Na primeira vez leva cerca de 45 minutos: ele baixa
+   30 dias de velas reais de 1 minuto de todos os ativos turbo abertos (cerca de 100) e
+   roda a pesquisa. Nos dias seguintes baixa só o que falta e leva poucos minutos. O
+   banco de dados ocupa em torno de 350 MB.
 5. Clique em **Abrir relatório** para ver o plano do dia.
 6. Clique em **2. Iniciar bot**. Ele opera na conta demo até você clicar em **Parar bot**.
 
