@@ -46,6 +46,7 @@ O `.env` nunca vai para o GitHub.
 |---|---|
 | Coleta | Baixa da corretora a lista de ativos, os payouts e as velas reais de 1 minuto. |
 | Pesquisa | Testa cada estratégia em cada ativo com walk-forward: a configuração é escolhida só com dados antigos e julgada só em dados que ela não viu. |
+| Modelo de aprendizado de máquina | Treina no seu computador, com as velas reais, um modelo por grupo de ativos e o submete ao mesmo teste das regras. |
 | Filtro estatístico | Uma hipótese só é aprovada se a taxa de acerto fora da amostra superar o breakeven com 95% de confiança e sobreviver à correção para múltiplos testes (Benjamini-Hochberg). |
 | Plano do dia | Lista as estratégias aprovadas e, à parte, candidatas de exploração (sem vantagem comprovada, só demo). |
 | Executor | A cada fechamento de vela lê os dados ao vivo, calcula o sinal com a mesma função do backtest, abre a operação, espera o resultado e anota no diário. |
@@ -58,11 +59,32 @@ só para o autoteste do motor e nunca entra no banco de dados.
 
 RSI, Bandas de Bollinger, cruzamento com média a favor da tendência, sequência de velas,
 MHI, engolfo, estocástico, vela de força, MACD e um detector de padrões de cores das
-últimas 3 ou 4 velas (a direção de cada padrão é aprendida do histórico). Cada uma é
+últimas 3 ou 4 velas (a direção de cada padrão é aprendida do histórico). Cada regra é
 combinada com filtros de horário (Ásia, Londres, Nova York, tarde/noite) e de
 volatilidade (alta ou baixa).
 
 Modos: velas de 1 min com expiração de 1 ou 5 min, e velas de 5 min com expiração de 5 min.
+
+### Modelo de aprendizado de máquina
+
+Além das regras, a pesquisa diária treina um modelo local (gradient boosting, da
+biblioteca scikit-learn). Ele não usa internet nem serviço pago e decide em milissegundos.
+
+- **O que ele vê:** 27 medidas de cada vela, todas sem unidade para valerem em qualquer
+  ativo: tamanho e forma das últimas velas, retornos recentes, RSI, Bollinger,
+  estocástico, MACD, distância das médias, volatilidade, sequência de cores e horário.
+- **Um modelo por grupo:** os ativos OTC (preço gerado pela corretora) formam um grupo e
+  os de mercado aberto, outro. Juntar os ativos dá muito mais dados para achar um padrão fraco.
+- **Quando ele opera:** só quando a chance estimada passa de um limiar (CALL) ou fica
+  abaixo do espelho dele (PUT). O limiar é escolhido num trecho que o modelo não viu no treino.
+- **Como é julgado:** pelo mesmo walk-forward das regras. Se na validação nenhum limiar
+  mostra vantagem, o modelo fica de fora daquela janela. No relatório isso aparece como
+  "ficou de fora".
+- **Se for aprovado:** o plano recebe uma entrada por ativo do grupo, começando pelos
+  de maior payout (até `max_ativos_plano`).
+
+Os modelos treinados ficam em `data/modelos/`, só no seu computador. Para desligar,
+mude `ativo = false` na seção `[ml]` do `config.toml`.
 
 ### Quanto investir
 
@@ -114,6 +136,8 @@ Use `iq.bat` na pasta do projeto:
 | `iq diagnostico` | Confere login, saldos, ativos e velas. |
 | `iq diario` | Coleta dados reais, refaz a pesquisa e gera o relatório. |
 | `iq relatorio --abrir` | Gera e abre o relatório. |
+| `iq pesquisar` | Refaz a pesquisa com os dados já baixados (não precisa de login). |
+| `iq pesquisar --ensaio` | Igual, mas sem gravar nada: o plano do bot e os modelos em uso não mudam. |
 | `iq operar` | Roda o bot na demo. Opções: `--exploracao`, `--simular`, `--minutos N`, `--continuo`. |
 | `iq operar --conta real` | Roda na conta real (pede a frase de confirmação). |
 | `iq prontidao` | Mostra os critérios para a conta real. |
@@ -123,6 +147,7 @@ Use `iq.bat` na pasta do projeto:
 
 - `config.toml`: todas as regras (coleta, pesquisa, risco, operação, conta real).
 - `data/iq_agent.db`: velas, pesquisas e diário de operações (fica só no seu computador).
+- `data/modelos/`: modelos de aprendizado de máquina treinados na última pesquisa.
 - `reports/relatorio.html`: último relatório.
 - `logs/`: registro técnico. Não guarda senha nem token.
 - `iq_agent/`: código. `tests/`: testes automáticos (`.venv\Scripts\python -m pytest`).

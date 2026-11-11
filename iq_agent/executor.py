@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable
 
+from . import ml
 from .banco import Banco
 from .config import Config
 from .estatistica import wilson, z_unilateral
@@ -76,6 +77,8 @@ def inicio_do_dia(ts: float) -> float:
 
 def sinal_atual(entrada: Entrada, v: Velas) -> int:
     """Sinal na última vela fechada: +1 CALL, -1 PUT, 0 nada. Mesma lógica do backtest."""
+    if entrada.estrategia == ml.NOME:
+        return ml.sinal_atual(v, entrada.params)
     sinal = int(ESTRATEGIAS[entrada.estrategia].func(v, **entrada.params)[-1])
     if sinal and entrada.vol != "qualquer" and not bool(mascara_vol(razao_vol(v), entrada.vol)[-1]):
         return 0
@@ -140,7 +143,12 @@ class Executor:
         for e in escolhidas:
             if e.chave in suspensas:
                 self.log(f"Suspensa por desempenho ao vivo: {e.ativo} {e.modo} {e.estrategia} ({suspensas[e.chave]})")
-        return [e for e in escolhidas if e.chave not in suspensas and e.estrategia in ESTRATEGIAS]
+        conhecidas = [e for e in escolhidas if e.estrategia in ESTRATEGIAS or e.estrategia == ml.NOME]
+        for e in conhecidas:
+            if e.estrategia == ml.NOME and ml.carregar_modelo(e.params.get("arquivo")) is None:
+                self.log(f"Modelo de {e.ativo} {e.modo} não encontrado em disco; atualize o mercado para treiná-lo.")
+        return [e for e in conhecidas if e.chave not in suspensas
+                and (e.estrategia != ml.NOME or ml.carregar_modelo(e.params.get("arquivo")) is not None)]
 
     def _suspensas(self, entradas: list[Entrada], agora: float) -> dict[tuple, str]:
         """Entradas cujo resultado ao vivo já mostra, com confiança, taxa abaixo do breakeven."""

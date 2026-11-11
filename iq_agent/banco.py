@@ -43,8 +43,12 @@ CREATE INDEX IF NOT EXISTS idx_operacoes_ts ON operacoes (ts_sinal);
 
 
 class Banco:
-    def __init__(self, caminho: Path | str):
+    def __init__(self, caminho: Path | str, somente_leitura: bool = False):
         self.caminho = Path(caminho)
+        if somente_leitura:  # para ensaios: lê o banco real sem poder alterar nada nele
+            self.con = sqlite3.connect(f"{self.caminho.resolve().as_uri()}?mode=ro", uri=True)
+            self.con.row_factory = sqlite3.Row
+            return
         if str(caminho) != ":memory:":
             self.caminho.parent.mkdir(parents=True, exist_ok=True)
         self.con = sqlite3.connect(str(caminho))

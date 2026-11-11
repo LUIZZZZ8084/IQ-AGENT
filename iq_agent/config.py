@@ -74,14 +74,29 @@ class Real:
 
 
 @dataclass
+class Ml:
+    """Modelo de aprendizado de máquina local (ver iq_agent/ml.py)."""
+
+    ativo: bool = True
+    max_linhas_treino: int = 300_000  # linhas na memória para treinar cada grupo de ativos
+    max_ativos_plano: int = 10  # se o modelo de um grupo for aprovado, em quantos ativos operar
+
+
+@dataclass
 class Config:
     coleta: Coleta = field(default_factory=Coleta)
     pesquisa: Pesquisa = field(default_factory=Pesquisa)
     risco: Risco = field(default_factory=Risco)
     operacao: Operacao = field(default_factory=Operacao)
     real: Real = field(default_factory=Real)
+    ml: Ml = field(default_factory=Ml)
     raiz: Path = RAIZ
     db: Path = RAIZ / "data" / "iq_agent.db"
+
+    @property
+    def dir_modelos(self) -> Path:
+        """Modelos treinados ficam ao lado do banco de dados (só no computador do usuário)."""
+        return Path(self.db).parent / "modelos"
 
     @property
     def dir_relatorios(self) -> Path:
@@ -92,7 +107,7 @@ class Config:
         return self.raiz / "logs"
 
 
-_SECOES = {"coleta": Coleta, "pesquisa": Pesquisa, "risco": Risco, "operacao": Operacao, "real": Real}
+_SECOES = {"coleta": Coleta, "pesquisa": Pesquisa, "risco": Risco, "operacao": Operacao, "real": Real, "ml": Ml}
 _MODO = re.compile(r"^M(\d+)>(\d+)$")
 
 
@@ -150,6 +165,8 @@ def validar(cfg: Config) -> Config:
     _entre("real.min_operacoes_demo", cfg.real.min_operacoes_demo, 0, 100000)
     _entre("real.min_dias_demo", cfg.real.min_dias_demo, 0, 365)
     _entre("real.janela_dias", cfg.real.janela_dias, 1, 365)
+    _entre("ml.max_linhas_treino", cfg.ml.max_linhas_treino, 10_000, 5_000_000)
+    _entre("ml.max_ativos_plano", cfg.ml.max_ativos_plano, 1, 50)
     return cfg
 
 

@@ -49,3 +49,8 @@ valor_maximo = 5.0         # teto absoluto por operacao na conta real
 min_operacoes_demo = 100   # operacoes de estrategias aprovadas feitas na demo
 min_dias_demo = 10         # dias diferentes com operacoes na demo
 janela_dias = 60           # periodo da demo considerado na avaliacao
+
+[ml]
+ativo = true               # treina o modelo de aprendizado de maquina junto com a pesquisa diaria
+max_linhas_treino = 300000 # linhas na memoria para treinar cada grupo de ativos (mais linhas = mais memoria)
+max_ativos_plano = 10      # se o modelo de um grupo for aprovado, em quantos ativos ele opera

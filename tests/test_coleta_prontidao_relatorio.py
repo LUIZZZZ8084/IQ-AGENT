@@ -182,8 +182,10 @@ def test_relatorio_completo(cfg, banco, tmp_path):
     caminho = gerar(banco, cfg, agora=corte + DIA, caminho=tmp_path / "r.html")
     pagina = caminho.read_text(encoding="utf-8")
     for trecho in ("Plano do dia", "Hipóteses mais fortes", "Cenário atual dos ativos", "Conta demo", "Conta real",
-                   "Todas as hipóteses", "EURUSD-OTC", "aprovada", 'id="pontos-demo"', 'id="pontos-real"'):
+                   "Todas as hipóteses", "EURUSD-OTC", "aprovada", 'id="pontos-demo"', 'id="pontos-real"',
+                   "Modelo de aprendizado de máquina", "Grupo OTC", "Grupo mercado aberto"):
         assert trecho in pagina, trecho
+    assert "modelos" not in pagina.split("Plano do dia")[1].split("</table>")[0]  # o caminho do arquivo não aparece
     assert pagina.count("<svg") >= 3
     assert pagina.count('id="demo"') == 1 and pagina.count('id="pontos-demo"') == 1  # ids não se repetem
 
