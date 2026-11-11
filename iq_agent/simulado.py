@@ -8,8 +8,8 @@ from __future__ import annotations
 import numpy as np
 
 from .iqclient import expiracao_turbo
-from .tipos import (FRASE_CONTA_REAL, NOMES_CONTA, PRATICA, REAL, Ativo, ContaRealBloqueada, ErroIQ, Ordem,
-                    OrdemRecusada, Resultado, Saldo)
+from .tipos import (FRASE_CONTA_REAL, NOMES_CONTA, PRATICA, REAL, Ativo, ContaRealBloqueada, ErroConexao, ErroIQ,
+                    Ordem, OrdemRecusada, Resultado, Saldo)
 from .velas import Velas
 
 
@@ -31,6 +31,9 @@ class ClienteSimulado:
         self._ordens: dict[int, tuple[Ordem, float, float, int]] = {}  # id -> (ordem, entrada, payout, conta)
         self._seq = 0
         self.enviar_resultado = enviar_resultado  # False simula a mensagem de resultado que não chega
+        # Defeitos de ordem para os testes: "recusa" (corretora recusa), "nao_entra" (sem resposta e a
+        # ordem não entra) ou "sem_confirmacao" (a ordem entra, mas a resposta se perde).
+        self.defeito_ordem: str | None = None
         self.conectado = False
 
     # ------------------------------------------------------------ relógio e conexão
@@ -114,12 +117,18 @@ class ClienteSimulado:
         conta = self._tipo_conta
         if valor > self._saldos[conta]:
             raise OrdemRecusada("saldo insuficiente")
+        if self.defeito_ordem == "recusa":
+            raise OrdemRecusada("ativo indisponível (simulado)")
+        if self.defeito_ordem == "nao_entra":
+            raise ErroConexao("O servidor não respondeu a tempo (option).")
         self._seq += 1
         expiracao = expiracao_turbo(self._t, minutos)
         ordem = Ordem(id=self._seq, ativo_id=ativo.id, ativo=ativo.nome, direcao=direcao, valor=float(valor),
                       expiracao=expiracao, aberta_em=self._t)
         self._saldos[conta] -= valor
         self._ordens[ordem.id] = (ordem, self._preco(ativo.id, self._t), self._por_id[ativo.id].payout, conta)
+        if self.defeito_ordem == "sem_confirmacao":
+            raise ErroConexao("O servidor não respondeu a tempo (option).")
         return ordem
 
     def _resultado(self, ordem: Ordem, entrada: float, payout: float) -> Resultado:

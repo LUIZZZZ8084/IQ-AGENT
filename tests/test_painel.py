@@ -163,3 +163,48 @@ def test_bot_opera_na_demo_pelo_painel(painel):
     assert "Resumo: 3 operações" in texto_do_log(painel)
     assert "Não consegui atualizar o relatório" not in texto_do_log(painel)
     assert (painel.cfg.dir_relatorios / "relatorio.html").exists()
+
+
+def test_simulacao_fica_evidente_na_faixa_e_no_botao(painel):
+    assert painel.botoes["iniciar"].cget("text") == "2. Iniciar bot"
+    painel.simular.set(True)
+    painel._pintar_faixa()
+    assert "SIMULAÇÃO: nenhuma ordem é enviada" in painel.faixa.cget("text")
+    assert painel.botoes["iniciar"].cget("text") == "2. Iniciar simulação"
+    painel.simular.set(False)
+    painel._pintar_faixa()
+    assert painel.faixa.cget("text") == "CONTA DEMO · treino"
+    assert painel.botoes["iniciar"].cget("text") == "2. Iniciar bot"
+
+
+def test_iniciar_em_simulacao_avisa_e_nao_abre_operacoes(painel):
+    from iq_agent.banco import Banco
+
+    painel.continuo.set(False)
+    painel.simular.set(True)
+    banco = Banco(painel.cfg.db)
+    resumo = {"ativos": 1, "velas": 0, "periodo": [None, None], "hipoteses": 1, "testaveis": 1, "aprovadas": 1,
+              "p_menor_5": 1, "esperado_acaso": 0.1, "taxa_media": None, "breakeven_medio": None}
+    banco.salvar_pesquisa("r1", painel.cliente.agora(), resumo, [], {"run_id": "r1", "entradas": [{
+        "tipo": "aprovado", "ativo": "PLANT", "modo": "M1>1", "tf": 60, "exp_min": 1, "estrategia": "sequencia",
+        "params": {"n": 3, "modo": "reversao"}, "sessao": "todas", "vol": "qualquer", "payout": 0.85,
+        "breakeven": 0.5405, "p_inf": 0.58, "taxa": 0.6, "n_teste": 1000}]})
+    banco.fechar()
+    painel._iniciar_bot()
+    assert painel.marca_simular.instate(["disabled"])  # as opções ficam travadas enquanto o bot roda
+    painel.raiz.after(1500, painel._parar_bot)
+    esperar(painel, 60)
+    registro = texto_do_log(painel)
+    assert "ATENÇÃO: 'Só simular' está marcado" in registro and "[simulação] entraria em" in registro
+    banco = Banco(painel.cfg.db)
+    assert banco.operacoes() == []
+    banco.fechar()
+    assert painel.marca_simular.instate(["!disabled"])
+
+
+def test_sem_exploracao_o_painel_avisa(painel):
+    painel.continuo.set(False)
+    painel.exploracao.set(False)
+    painel._iniciar_bot()
+    esperar(painel, 60)
+    assert "'Exploração' está desmarcada" in texto_do_log(painel)

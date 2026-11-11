@@ -24,7 +24,7 @@ from .tipos import FRASE_CONTA_REAL, ErroIQ
 
 registro = logging.getLogger("iq_agent.painel")
 
-COR_DEMO, COR_REAL = "#1c5cab", "#b3261e"
+COR_DEMO, COR_REAL, COR_SIMULACAO = "#1c5cab", "#b3261e", "#5c5c5c"
 
 
 class Painel:
@@ -93,11 +93,14 @@ class Painel:
             opcoes, variable=self.exploracao,
             text="Exploração: operar também candidatos sem vantagem comprovada, com valor mínimo (só demo)")
         self.marca_exploracao.pack(anchor="w")
-        ttk.Checkbutton(opcoes, variable=self.simular,
-                        text="Simular: mostrar o que o bot faria, sem enviar nenhuma ordem").pack(anchor="w")
-        ttk.Checkbutton(opcoes, variable=self.continuo,
-                        text="Contínuo: deixar rodando e atualizar o mercado sozinho a cada novo dia (só demo)"
-                        ).pack(anchor="w")
+        self.marca_continuo = ttk.Checkbutton(
+            opcoes, variable=self.continuo,
+            text="Contínuo: deixar rodando e atualizar o mercado sozinho a cada novo dia (só demo)")
+        self.marca_continuo.pack(anchor="w")
+        self.marca_simular = ttk.Checkbutton(
+            opcoes, variable=self.simular, command=self._pintar_faixa,
+            text="Só simular (NÃO envia ordens): apenas mostra aqui embaixo o que o bot faria")
+        self.marca_simular.pack(anchor="w", pady=(6, 0))
 
         self.texto = ScrolledText(r, height=18, state="disabled", font=("Consolas", 10), wrap="word")
         self.texto.pack(fill="both", expand=True, padx=12, pady=12)
@@ -105,7 +108,14 @@ class Painel:
                        "Passo 2: Iniciar bot.")
 
     def _pintar_faixa(self) -> None:
-        if self.conta.get() == "REAL":
+        """Faixa do topo e botão de iniciar: mostram a conta e se as ordens serão enviadas."""
+        conta = "REAL" if self.conta.get() == "REAL" else "DEMO"
+        if self.simular.get():
+            self.faixa.config(text=f"CONTA {conta} · SIMULAÇÃO: nenhuma ordem é enviada", bg=COR_SIMULACAO)
+            self.botoes["iniciar"].config(text="2. Iniciar simulação")
+            return
+        self.botoes["iniciar"].config(text="2. Iniciar bot")
+        if conta == "REAL":
             self.faixa.config(text="CONTA REAL · dinheiro de verdade", bg=COR_REAL)
         else:
             self.faixa.config(text="CONTA DEMO · treino", bg=COR_DEMO)
@@ -124,6 +134,10 @@ class Painel:
                 botao.state(estado)
         self.radio_demo.state(estado)
         self.radio_real.state(estado)
+        # As opções só valem na partida: travadas enquanto algo roda, para não parecer que mudam o bot em curso.
+        self.marca_simular.state(estado)
+        self.marca_continuo.state(estado)
+        self.marca_exploracao.state(["disabled"] if ocupado or self.conta.get() == "REAL" else ["!disabled"])
         self.botoes["parar"].state(["!disabled"] if self.bot_rodando else ["disabled"])
 
     def _drenar(self) -> None:
@@ -257,6 +271,12 @@ class Painel:
         if not self._obter_credenciais():
             return
         frase = self.frase_real
+        if simular:
+            self._escrever("ATENÇÃO: 'Só simular' está marcado. O bot NÃO vai abrir operações, só mostrar o que "
+                           "faria. Para operar de verdade, pare, desmarque essa opção e inicie de novo.")
+        elif conta == "PRACTICE" and not exploracao:
+            self._escrever("Aviso: 'Exploração' está desmarcada. O bot só opera estratégias aprovadas pela "
+                           "pesquisa; nos dias sem nenhuma aprovada, ele não abre operações.")
 
         def tarefa() -> None:
             self._garantir_conexao()

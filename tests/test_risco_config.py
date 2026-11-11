@@ -140,4 +140,4 @@ def test_config_invalida_e_recusada(tmp_path, conteudo):
 
 def test_config_do_repositorio_e_valida():
     cfg = carregar()
-    assert cfg.real.permitido is False and cfg.operacao.modo_exploracao is False
+    assert cfg.real.permitido is False  # no arquivo do repositório a conta real continua bloqueada

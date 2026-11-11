@@ -248,6 +248,43 @@ def test_operar_atualiza_o_mercado_quando_nao_ha_plano(cfg, banco, cliente):
     assert (cfg.dir_relatorios / "relatorio.html").exists()
 
 
+def test_ordem_sem_confirmacao_e_conciliada_pelo_saldo(cfg, banco, cliente):
+    """A ordem entra, mas a resposta da corretora se perde: o bot descobre pelo saldo e segue."""
+    cliente.defeito_ordem = "sem_confirmacao"
+    cfg.risco.max_operacoes_dia = 3
+    resumo, mensagens = rodar(cfg, banco, cliente, plano(entrada()), minutos=600)
+    ops = banco.operacoes()
+    assert resumo["operacoes"] == 3 and len(ops) == 3
+    assert all(o["status"] in ("win", "loss", "equal") and o["opcao_id"] is None for o in ops)
+    assert all("ordem sem confirmação" in o["fonte"] for o in ops)
+    assert any("a ordem entrou" in m for m in mensagens)
+    assert cliente.saldo_demo().valor == pytest.approx(10_000 + resumo["lucro"], abs=0.01)
+
+
+def test_ordem_que_nao_entra_descansa_o_ativo_e_depois_para_o_bot(cfg, banco, cliente):
+    cliente.defeito_ordem = "nao_entra"
+    resumo, mensagens = rodar(cfg, banco, cliente, plano(entrada()), minutos=900)
+    ops = banco.operacoes()
+    assert resumo["operacoes"] == 0 and cliente.saldo_demo().valor == 10_000
+    assert [o["status"] for o in ops] == ["falhou"] * 5  # cinco tentativas e para
+    intervalos = [b["ts_sinal"] - a["ts_sinal"] for a, b in zip(ops, ops[1:])]
+    assert min(intervalos) >= 1800  # o ativo descansa 30 minutos entre as tentativas
+    assert any("O saldo não mudou" in m for m in mensagens)
+    assert any("ordens seguidas não foram aceitas" in m for m in mensagens)
+
+
+def test_ordem_recusada_registra_o_motivo_e_nao_insiste(cfg, banco, cliente):
+    cliente.defeito_ordem = "recusa"
+    resumo, mensagens = rodar(cfg, banco, cliente, plano(entrada()), minutos=45)
+    ops = banco.operacoes()
+    assert resumo["operacoes"] == 0 and 1 <= len(ops) <= 2  # no máximo uma nova tentativa em 45 minutos
+    assert {o["status"] for o in ops} == {"recusada"} and "indisponível" in ops[0]["erro"]
+    assert any("ordem recusada pela corretora (ativo indisponível" in m for m in mensagens)
+    cliente.defeito_ordem = None  # o problema passou: uma nova execução opera normalmente
+    resumo, _ = rodar(cfg, banco, cliente, plano(entrada()), minutos=120)
+    assert resumo["operacoes"] > 0
+
+
 def test_conta_invalida():
     with pytest.raises(ValueError):
         Executor(Config(), None, None, plano(), conta="TORNEIO")
