@@ -13,6 +13,7 @@ import threading
 import time
 import tkinter as tk
 import webbrowser
+from pathlib import Path
 from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -21,6 +22,7 @@ from .banco import Banco
 from .config import Config, ErroConfig, carregar, credenciais
 from .relatorio import gerar
 from .tipos import FRASE_CONTA_REAL, ErroIQ
+from .trava import Trava
 
 registro = logging.getLogger("iq_agent.painel")
 
@@ -463,9 +465,21 @@ class Painel:
 
 def abrir(cfg: Config) -> None:
     app.preparar_logs(cfg)
-    raiz = tk.Tk()
-    raiz.title("IQ-AGENT")
-    raiz.geometry("900x640")
-    raiz.minsize(760, 520)
-    Painel(raiz, cfg)
-    raiz.mainloop()
+    trava = Trava(Path(cfg.db).parent / "painel.lock")
+    if not trava.adquirir():
+        # Dois painéis poderiam ligar dois bots na mesma conta: só um abre por vez.
+        aviso = tk.Tk()
+        aviso.withdraw()
+        messagebox.showinfo("IQ-AGENT", "O painel do IQ-AGENT já está aberto.\n\nProcure a janela dele na barra "
+                                        "de tarefas. Só é possível abrir um painel por vez.")
+        aviso.destroy()
+        return
+    try:
+        raiz = tk.Tk()
+        raiz.title("IQ-AGENT")
+        raiz.geometry("900x640")
+        raiz.minsize(760, 520)
+        Painel(raiz, cfg)
+        raiz.mainloop()
+    finally:
+        trava.liberar()

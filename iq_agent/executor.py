@@ -19,15 +19,16 @@ from . import ml
 from .banco import Banco
 from .config import Config
 from .estatistica import wilson, z_unilateral
-from .estrategias import ESTRATEGIAS, VELAS_AQUECIMENTO
-from .filtros import mascara_vol, razao_vol, sessao_inclui
+from .estrategias import ESTRATEGIAS, NOMES_CURTOS, VELAS_AQUECIMENTO
+from .filtros import descrever_sessao, mascara_vol, razao_vol, sessao_inclui
 from .iqclient import expiracao_turbo
 from .risco import GestorRisco
-from .tipos import Ativo, ErroIQ, OrdemRecusada, Resultado
+from .tipos import Ativo, ErroConexao, ErroIQ, ErroLogin, OrdemRecusada, Resultado
 from .velas import Velas
 
 ATUALIZAR_ATIVOS_S = 600
 MAX_FALHAS_SEGUIDAS = 10
+PULSO_S = 1800  # a cada meia hora o bot escreve uma linha dizendo que segue rodando
 MAX_ORDENS_COM_PROBLEMA = 5  # ordens seguidas recusadas ou sem confirmação antes de parar o bot
 CASTIGO_ATIVO_S = 1800  # depois de um problema, o ativo fica esse tempo sem novas tentativas
 ROTULO_CONTA = {"PRACTICE": "DEMO", "REAL": "REAL"}
@@ -183,6 +184,34 @@ class Executor:
         while not self.parar.is_set() and c.agora() < instante:
             c.dormir_ate(min(instante, c.agora() + 1.0))
 
+    def _esperar_conexao(self, motivo: Exception) -> bool:
+        """A conexão caiu: tenta reconectar até conseguir, com intervalos de até 2 minutos.
+
+        Devolve False se pediram para parar no meio. Levanta _Abortar se o login for
+        recusado, porque insistir com senha errada pode bloquear a conta.
+        """
+        c = self.cliente
+        inicio, tentativa = c.agora(), 0
+        self.log(f"A conexão com a corretora caiu ({motivo}). Vou tentar reconectar até ela voltar.")
+        while not self.parar.is_set():
+            tentativa += 1
+            self._dormir(c.agora() + min(120, 5 * tentativa))
+            if self.parar.is_set():
+                break
+            try:
+                c.garantir()
+            except ErroLogin as erro:
+                raise _Abortar(f"a corretora recusou o login ao reconectar ({erro})") from None
+            except ErroIQ as erro:
+                if tentativa <= 2 or tentativa % 10 == 0:
+                    minutos = round((c.agora() - inicio) / 60)
+                    self.log(f"Ainda sem conexão há {minutos} min ({erro}). Sigo tentando.")
+                continue
+            self.log(f"Conexão restabelecida depois de {max(1, round((c.agora() - inicio) / 60))} min.")
+            self._ativos_em = -math.inf  # a lista de ativos e payouts pode ter mudado
+            return True
+        return False
+
     def _conferir_conta(self) -> None:
         if self.cliente.conta != self.conta:
             raise _Abortar(f"a conexão está na conta {self.cliente.conta}, mas o executor foi iniciado "
@@ -200,8 +229,17 @@ class Executor:
         if novo:
             self.plano = novo
             entradas = self.entradas(agora)
-            self.log(f"Plano do dia atualizado: {len(entradas)} entrada(s).")
+            self.log(f"Plano do dia atualizado: {len(entradas)} estratégia(s) em observação.")
+            self._listar(entradas)
         return entradas
+
+    def _listar(self, entradas: list[Entrada]) -> None:
+        """Mostra o que o bot está vigiando. Cada linha é uma estratégia, não uma operação."""
+        for e in entradas:
+            nome = NOMES_CURTOS.get(e.estrategia, e.estrategia)
+            tipo = "aprovada" if e.tipo == "aprovado" else "exploração"
+            self.log(f"  - {nome} em {e.ativo}: expira em {e.exp_min} min, opera em {descrever_sessao(e.sessao)} "
+                     f"({tipo})")
 
     # ------------------------------------------------------------ laço principal
     def rodar(self, minutos: float | None = None) -> dict:
@@ -226,13 +264,16 @@ class Executor:
         dia = inicio_do_dia(agora)
         gestor = GestorRisco.do_historico(self.risco_cfg, self.cfg.operacao, self._saldo,
                                           self.banco.operacoes(desde=dia, conta=self.conta))
-        self.log(f"Conta {rotulo}: {self._saldo:.2f} {saldo.moeda}. {len(entradas)} entrada(s) no plano"
+        self.log(f"Conta {rotulo}: {self._saldo:.2f} {saldo.moeda}. Vigiando {len(entradas)} estratégia(s) do plano"
                  + (" [SIMULAÇÃO: nenhuma ordem será enviada]" if self.simular else ""))
-        for e in entradas:
-            self.log(f"  - {e.tipo}: {e.ativo} {e.modo} {e.estrategia} {e.params} sessão={e.sessao} vol={e.vol}")
+        self._listar(entradas)
+        if entradas:
+            self.log("Essas são as estratégias vigiadas, não operações. O bot abre uma operação por vez, "
+                     "quando uma delas dá sinal; cada operação aparece abaixo como 'Aberta'.")
         fim = agora + minutos * 60 if minutos else None
         falhas = 0
         pausado = False  # True depois de bater um limite do dia, no modo contínuo
+        pulso = agora  # de tempos em tempos o bot avisa que segue vivo, mesmo sem operar
         try:
             while not self.parar.is_set():
                 agora = c.agora()
@@ -247,7 +288,10 @@ class Executor:
                     dia = inicio_do_dia(agora)
                     self.log("Novo dia: limites de risco reiniciados.")
                     entradas = self._renovar(entradas, agora)
-                    self._saldo = c.saldo_ativo(atualizar=True).valor
+                    try:
+                        self._saldo = c.saldo_ativo(atualizar=True).valor
+                    except ErroIQ:
+                        pass  # sem conexão na virada do dia: segue com o último saldo conhecido
                     gestor = GestorRisco(self.risco_cfg, self.cfg.operacao, self._saldo)
                     pausado = False
                 try:
@@ -261,6 +305,12 @@ class Executor:
                     if ativo_hoje:
                         self._ciclo(fronteira, entradas, gestor)
                     falhas = 0
+                    if c.agora() - pulso >= PULSO_S:
+                        pulso = c.agora()
+                        estado = ("aguardando sinal" if ativo_hoje else
+                                  "parado por hoje (limite do dia)" if pausado else "sem estratégias no plano")
+                        self.log(f"Rodando, {estado}. Hoje: {gestor.operacoes} operações, resultado "
+                                 f"{gestor.lucro:+.2f}.")
                 except _Abortar as motivo:
                     self.log(f"Parando: {motivo}")
                     break
@@ -270,18 +320,27 @@ class Executor:
                         break
                     pausado = True
                     self.log(f"Por hoje chega: {fim_dia}. Volto a operar amanhã, depois de atualizar o mercado.")
+                except ErroConexao as exc:
+                    # Queda de internet ou da corretora: insiste até voltar. Só para se pedirem ou se o
+                    # login for recusado.
+                    try:
+                        if not self._esperar_conexao(exc):
+                            break
+                        self._saldo = c.saldo_ativo(atualizar=True).valor  # o saldo pode ter mudado na queda
+                        falhas = 0
+                    except _Abortar as motivo:
+                        self.log(f"Parando: {motivo}")
+                        break
+                    except ErroIQ:
+                        pass  # caiu de novo logo depois de voltar: a próxima volta do laço trata
                 except ErroIQ as exc:
+                    # Erro que não é de conexão (resposta inesperada da corretora): tem limite de tentativas.
                     falhas += 1
                     self.log(f"Problema com a corretora ({exc}). Tentativa {falhas}/{MAX_FALHAS_SEGUIDAS}.")
                     if falhas >= MAX_FALHAS_SEGUIDAS:
                         self.log("Muitas falhas seguidas; parando.")
                         break
                     self._dormir(c.agora() + min(60, 5 * falhas))
-                    try:
-                        c.garantir()
-                        self._saldo = c.saldo_ativo(atualizar=True).valor  # o saldo pode ter mudado na queda
-                    except ErroIQ as exc2:
-                        self.log(f"Reconexão falhou: {exc2}")
             if self.parar.is_set():
                 self.log("Parado a pedido.")
         except KeyboardInterrupt:
@@ -360,11 +419,40 @@ class Executor:
         self._ordens_com_problema = 0
         self.log(f"[{ROTULO_CONTA[self.conta]}] Aberta: {rotulo} valor {valor:.2f}, payout {ativo.payout:.0%}, "
                  f"atraso {atraso:.1f}s")
-        resultado = c.aguardar_resultado(ordem)
-        status, lucro, fonte, saldo_depois = self._fechar_contas(resultado, valor, ativo.payout)
+        abortar = None
+        try:
+            resultado = c.aguardar_resultado(ordem)
+            status, lucro, fonte, saldo_depois = self._fechar_contas(resultado, valor, ativo.payout)
+        except ErroIQ as exc:
+            # A conexão caiu com a operação aberta. O resultado sai na corretora de qualquer jeito:
+            # espera a conexão voltar e descobre pelo saldo, para a operação não ficar sem registro.
+            try:
+                status, lucro, fonte, saldo_depois = self._fechar_contas_apos_queda(ordem.expiracao, valor,
+                                                                                   ativo.payout, exc)
+            except _Abortar as motivo:
+                abortar = motivo
+                status, lucro, fonte, saldo_depois = ("desconhecido", 0.0, "conexão caiu com a operação aberta",
+                                                      self._saldo)
         self._registrar_resultado(comum, ordem.id, ordem.aberta_em, ordem.expiracao, status, lucro, fonte,
                                   saldo_depois, gestor)
+        if abortar is not None:
+            raise abortar
         return True
+
+    def _fechar_contas_apos_queda(self, expiracao: int, valor: float, payout: float,
+                                  motivo: Exception) -> tuple[str, float, str, float]:
+        """Reconecta (insistindo) e descobre pelo saldo o resultado da operação que estava aberta."""
+        c = self.cliente
+        sem_mensagem = Resultado("desconhecido", 0.0, "sem-mensagem")
+        while True:
+            if not self._esperar_conexao(motivo):
+                return "desconhecido", 0.0, "conexão caiu com a operação aberta", self._saldo
+            try:
+                c.dormir_ate(expiracao + 20)
+                status, lucro, fonte, saldo_depois = self._fechar_contas(sem_mensagem, valor, payout)
+                return status, lucro, f"{fonte}; conexão caiu com a operação aberta", saldo_depois
+            except ErroIQ as outra:
+                motivo = outra
 
     def _problema_na_ordem(self, ativo: str) -> None:
         """Conta ordens seguidas com problema. O ativo descansa; se o problema se repete, o bot para."""
@@ -380,8 +468,17 @@ class Executor:
         """A corretora não confirmou a abertura. A ordem pode ter entrado ou não: o saldo decide."""
         c = self.cliente
         self.log(f"{rotulo}: a corretora não confirmou a ordem ({exc}). Conferindo pelo saldo se ela entrou...")
-        c.garantir()
-        saldo_agora = c.saldo_ativo(atualizar=True).valor
+        try:
+            c.garantir()
+            saldo_agora = c.saldo_ativo(atualizar=True).valor
+        except ErroLogin as erro:
+            raise _Abortar(f"a corretora recusou o login ao reconectar ({erro})") from None
+        except ErroIQ as queda:  # a conexão caiu junto com a ordem: espera voltar antes de conferir
+            if not self._esperar_conexao(queda):
+                self.banco.registrar_operacao(**comum, status="desconhecido", lucro=0.0,
+                                              erro="conexão caiu ao enviar a ordem; bot parado antes de conferir")
+                return False
+            saldo_agora = c.saldo_ativo(atualizar=True).valor
         if abs((self._saldo - saldo_agora) - valor) > max(0.02, 0.02 * valor):
             self.log("  O saldo não mudou: a ordem não entrou.")
             self.banco.registrar_operacao(**comum, status="falhou", lucro=0.0, erro=str(exc)[:300])

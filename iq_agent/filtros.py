@@ -23,6 +23,17 @@ def hora_utc(ts: np.ndarray | float) -> np.ndarray | int:
     return (np.asarray(ts, dtype=np.int64) // 3600) % 24
 
 
+def descrever_sessao(sessao: str) -> str:
+    """Faixa de horário da sessão no relógio do computador (ex.: '09h–14h')."""
+    if sessao == "todas":
+        return "qualquer horário"
+    from datetime import datetime
+
+    inicio, fim = SESSOES[sessao]
+    desloc = round(datetime.now().astimezone().utcoffset().total_seconds() / 3600)
+    return f"{(inicio + desloc) % 24:02d}h–{(fim + desloc) % 24:02d}h"
+
+
 def sessao_inclui(sessao: str, ts_entrada: float) -> bool:
     inicio, fim = SESSOES[sessao]
     return inicio <= int(hora_utc(ts_entrada)) < fim

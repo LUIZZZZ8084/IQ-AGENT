@@ -6,6 +6,7 @@ import logging
 import time
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Callable
 
 from . import prontidao
@@ -17,6 +18,7 @@ from .iqclient import IQClient, formato
 from .pesquisa import pesquisar
 from .relatorio import gerar
 from .tipos import PRATICA, REAL, Ativo, ErroIQ
+from .trava import Trava
 
 VALIDADE_PLANO_S = 36 * 3600
 PLANO_VELHO_S = 20 * 3600  # acima disso, o bot atualiza o mercado sozinho antes de operar
@@ -105,18 +107,26 @@ def operar(cfg: Config, banco: Banco, cliente, log: Log, conta: str = "PRACTICE"
     """
     if cliente.conta != conta:
         raise ErroIQ(f"A conexão está na conta {cliente.conta}; para operar em {conta}, faça a liberação antes.")
-    pesquisa = banco.ultima_pesquisa()
-    if pesquisa is None or cliente.agora() - pesquisa["ts"] > PLANO_VELHO_S:
-        log("O plano do dia não existe ou está desatualizado: atualizando o mercado antes de operar.")
-        atualizar_mercado(cfg, banco, cliente, log)
-    plano = plano_para_operar(banco, cliente.agora(), conta, log)
+    trava = Trava(Path(cfg.db).parent / "bot.lock")
+    if not trava.adquirir():
+        raise ErroIQ("Já existe um bot rodando neste computador com estes dados. Pare o outro antes de iniciar "
+                     "este: dois bots na mesma conta atrapalham a conferência dos resultados.")
+    try:
+        pesquisa = banco.ultima_pesquisa()
+        if pesquisa is None or cliente.agora() - pesquisa["ts"] > PLANO_VELHO_S:
+            log("O plano do dia não existe ou está desatualizado: atualizando o mercado antes de operar.")
+            atualizar_mercado(cfg, banco, cliente, log)
+        plano = plano_para_operar(banco, cliente.agora(), conta, log)
 
-    def renovar() -> dict:
-        return atualizar_mercado(cfg, banco, cliente, log)["plano"]
+        def renovar() -> dict:
+            return atualizar_mercado(cfg, banco, cliente, log)["plano"]
 
-    executor = Executor(cfg, banco, cliente, plano, exploracao=exploracao, simular=simular, log=log, conta=conta,
-                        parar=parar, renovar_plano=renovar if continuo and conta == "PRACTICE" else None)
-    resumo = executor.rodar(minutos)
+        executor = Executor(cfg, banco, cliente, plano, exploracao=exploracao, simular=simular, log=log,
+                            conta=conta, parar=parar,
+                            renovar_plano=renovar if continuo and conta == "PRACTICE" else None)
+        resumo = executor.rodar(minutos)
+    finally:
+        trava.liberar()
     try:
         gerar(banco, cfg, agora=cliente.agora())
     except Exception as exc:  # noqa: BLE001 - o relatório não pode derrubar o fim da sessão

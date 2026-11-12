@@ -288,3 +288,99 @@ def test_ordem_recusada_registra_o_motivo_e_nao_insiste(cfg, banco, cliente):
 def test_conta_invalida():
     with pytest.raises(ValueError):
         Executor(Config(), None, None, plano(), conta="TORNEIO")
+
+
+def test_registro_nao_confunde_estrategias_vigiadas_com_operacoes(cfg, banco, cliente):
+    """O usuário leu '6 entradas no plano' como 6 operações: o texto precisa deixar a diferença clara."""
+    cfg.risco.max_operacoes_dia = 2
+    outra = entrada(tipo="exploracao", estrategia="padrao_cores", params={"padrao": "AAB", "direcao": "call"},
+                    sessao="ny")
+    _, mensagens = rodar(cfg, banco, cliente, plano(entrada(), outra), exploracao=True, minutos=600)
+    texto = "\n".join(mensagens)
+    assert "Vigiando 2 estratégia(s) do plano" in texto and "entrada(s)" not in texto
+    assert "não operações" in texto and "uma operação por vez" in texto
+    assert "- Sequência em PLANT: expira em 1 min, opera em qualquer horário (aprovada)" in texto
+    assert "- Padrão de velas em PLANT: expira em 1 min, opera em" in texto and "(exploração)" in texto
+    assert texto.count("Aberta:") == 2  # as operações de verdade aparecem como 'Aberta'
+
+
+def test_bot_avisa_de_tempos_em_tempos_que_segue_rodando(cfg, banco, cliente):
+    cfg.risco.max_operacoes_dia = 1
+    _, mensagens = rodar(cfg, banco, cliente, plano(entrada(sessao="asia")), minutos=200,
+                         renovar_plano=lambda: None)
+    pulsos = [m for m in mensagens if m.startswith("Rodando, ")]
+    assert len(pulsos) >= 4  # uma linha a cada meia hora, em 200 minutos
+    assert "Hoje: " in pulsos[0] and "operações" in pulsos[0]
+
+
+# ------------------------------------------------------------------ quedas de conexão
+def test_queda_de_internet_longa_nao_para_o_bot(cfg, banco, cliente):
+    """Foi o que aconteceu ao vivo: a internet caiu e o bot desistiu em 4 minutos. Agora ele insiste."""
+    inicio = cliente.agora()
+    cliente.quedas = [(inicio + 20 * 60, inicio + 20 * 60 + 3 * 3600)]  # 3 horas fora do ar
+    cfg.risco.max_operacoes_dia = 30
+    resumo, mensagens = rodar(cfg, banco, cliente, plano(entrada()), minutos=420)
+    texto = "\n".join(mensagens)
+    assert "A conexão com a corretora caiu" in texto and "Vou tentar reconectar até ela voltar" in texto
+    assert "Ainda sem conexão há" in texto
+    assert "Conexão restabelecida depois de 18" in texto  # ~3 horas = 180 minutos
+    assert "Muitas falhas seguidas" not in texto
+    depois = [o for o in banco.operacoes() if o["ts_sinal"] > inicio + 20 * 60 + 3 * 3600]
+    assert depois, "o bot precisa voltar a operar quando a conexão volta"
+    assert not [o for o in banco.operacoes() if inicio + 21 * 60 < o["ts_sinal"] < inicio + 20 * 60 + 3 * 3600]
+    assert cliente.saldo_demo().valor == pytest.approx(10_000 + resumo["lucro"], abs=0.01)
+
+
+def test_queda_com_operacao_aberta_e_resolvida_pelo_saldo(cfg, banco, mercado):
+    class CaiDepoisDaOrdem(ClienteSimulado):
+        def abrir_opcao(self, *args, **kwargs):
+            ordem = super().abrir_opcao(*args, **kwargs)
+            if not self.quedas:  # a internet cai 5 segundos depois da primeira ordem, por 30 minutos
+                self.quedas = [(self._t + 5, self._t + 1800)]
+            return ordem
+
+    c = CaiDepoisDaOrdem(mercado, inicio_ts=INICIO)
+    cfg.risco.max_operacoes_dia = 3
+    resumo, mensagens = rodar(cfg, banco, c, plano(entrada()), minutos=300)
+    ops = banco.operacoes()
+    assert resumo["operacoes"] == 3 and len(ops) == 3
+    primeira = ops[0]
+    assert primeira["status"] in ("win", "loss", "equal")  # não ficou sem registro nem virou "empate" falso
+    assert "conexão caiu com a operação aberta" in primeira["fonte"] and "saldo" in primeira["fonte"]
+    assert primeira["lucro"] == pytest.approx(primeira["saldo_depois"] - primeira["saldo_antes"], abs=0.01)
+    assert all("conexão caiu" not in o["fonte"] for o in ops[1:])
+    assert any("Conexão restabelecida" in m for m in mensagens)
+    assert c.saldo_demo().valor == pytest.approx(10_000 + resumo["lucro"], abs=0.01)
+
+
+def test_login_recusado_ao_reconectar_para_o_bot(cfg, banco, cliente):
+    """Insistir com senha recusada pode bloquear a conta: nesse caso o bot para na hora."""
+    inicio = cliente.agora()
+    cliente.quedas = [(inicio + 10 * 60, inicio + 10 * 60 + 600)]
+
+    def log(m):
+        mensagens.append(m)
+        if "A conexão com a corretora caiu" in m:
+            cliente.quedas, cliente.login_recusado = [], True  # a rede voltou, mas a senha não vale mais
+
+    mensagens = []
+    Executor(cfg, banco, cliente, plano(entrada()), log=log).rodar(minutos=300)
+    texto = "\n".join(mensagens)
+    assert "Parando: a corretora recusou o login ao reconectar" in texto
+    assert texto.count("Ainda sem conexão") == 0 and "Conexão restabelecida" not in texto
+
+
+def test_parar_durante_a_queda_encerra_sem_esperar(cfg, banco, cliente):
+    inicio = cliente.agora()
+    cliente.quedas = [(inicio + 5 * 60, inicio + 30 * 86400)]  # fora do ar por um mês
+    parar = threading.Event()
+    mensagens = []
+
+    def log(m):
+        mensagens.append(m)
+        if "Ainda sem conexão" in m:
+            parar.set()
+
+    Executor(cfg, banco, cliente, plano(entrada()), log=log, parar=parar).rodar(minutos=None)
+    assert any("Parado a pedido" in m for m in mensagens)
+    assert cliente.agora() < inicio + 3600  # saiu logo, sem esperar a conexão voltar

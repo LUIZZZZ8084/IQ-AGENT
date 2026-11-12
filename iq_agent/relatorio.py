@@ -14,7 +14,7 @@ from .config import Config
 from .estatistica import breakeven, wilson, z_unilateral
 from .estrategias import NOMES_CURTOS
 from . import ml
-from .filtros import SESSOES
+from .filtros import descrever_sessao
 
 MAX_GRAFICO = 12
 LARGURA = 760
@@ -47,11 +47,7 @@ def _quando(ts: float | None, formato: str = "%d/%m %H:%M") -> str:
 
 def _sessao(nome: str) -> str:
     """Nome da sessão com as horas convertidas para o horário do computador."""
-    if nome == "todas":
-        return "qualquer horário"
-    ini, fim = SESSOES[nome]
-    desloc = round(datetime.now().astimezone().utcoffset().total_seconds() / 3600)
-    return f"{(ini + desloc) % 24:02d}h–{(fim + desloc) % 24:02d}h"
+    return descrever_sessao(nome)
 
 
 def _config(cfg: dict | None) -> str:
