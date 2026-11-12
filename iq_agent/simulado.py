@@ -9,7 +9,7 @@ import numpy as np
 
 from .iqclient import expiracao_turbo
 from .tipos import (FRASE_CONTA_REAL, NOMES_CONTA, PRATICA, REAL, Ativo, ContaRealBloqueada, ErroConexao, ErroIQ,
-                    Ordem, OrdemRecusada, Resultado, Saldo)
+                    ErroLogin, Ordem, OrdemRecusada, Resultado, Saldo)
 from .velas import Velas
 
 
@@ -34,6 +34,9 @@ class ClienteSimulado:
         # Defeitos de ordem para os testes: "recusa" (corretora recusa), "nao_entra" (sem resposta e a
         # ordem não entra) ou "sem_confirmacao" (a ordem entra, mas a resposta se perde).
         self.defeito_ordem: str | None = None
+        # Quedas de internet para os testes: lista de intervalos (início, fim) no relógio simulado.
+        self.quedas: list[tuple[float, float]] = []
+        self.login_recusado = False  # simula senha trocada / conta bloqueada na hora de reconectar
         self.conectado = False
 
     # ------------------------------------------------------------ relógio e conexão
@@ -43,11 +46,23 @@ class ClienteSimulado:
     def dormir_ate(self, instante: float) -> None:
         self._t = max(self._t, float(instante))
 
+    def _fora_do_ar(self) -> bool:
+        return any(inicio <= self._t < fim for inicio, fim in self.quedas)
+
+    def _exigir_conexao(self) -> None:
+        if self._fora_do_ar():
+            self.conectado = False
+            raise ErroConexao("Sem conexão com a corretora.")
+
     def conectar(self) -> None:
+        if self.login_recusado:
+            raise ErroLogin("E-mail ou senha incorretos.")
+        if self._fora_do_ar():
+            raise ErroConexao("Não consegui falar com o servidor de login: ConnectionError")
         self.conectado = True
 
     def garantir(self) -> None:
-        self.conectado = True
+        self.conectar()
 
     def fechar(self) -> None:
         self.conectado = False
@@ -71,12 +86,17 @@ class ClienteSimulado:
         return Saldo(id=tipo, tipo=tipo, valor=round(self._saldos[tipo], 2), moeda="USD")
 
     def saldo_demo(self, atualizar: bool = False) -> Saldo:
+        if atualizar:
+            self._exigir_conexao()
         return self._saldo(PRATICA)
 
     def saldo_ativo(self, atualizar: bool = False) -> Saldo:
+        if atualizar:
+            self._exigir_conexao()
         return self._saldo(self._tipo_conta)
 
     def ativos(self) -> list[Ativo]:
+        self._exigir_conexao()
         return list(self._ativos)
 
     def _serie(self, ativo_id: int) -> Velas:
@@ -110,10 +130,12 @@ class ClienteSimulado:
 
     def velas_varias(self, ativos_ids: list[int], tf: int = 60, quantidade: int = 1000,
                      ate: float | None = None) -> dict[int, Velas]:
+        self._exigir_conexao()
         return {a: Velas.de_linhas(self.velas(a, tf, quantidade, ate), tf) for a in ativos_ids}
 
     # ------------------------------------------------------------ operações
     def abrir_opcao(self, ativo: Ativo, direcao: str, valor: float, minutos: int) -> Ordem:
+        self._exigir_conexao()
         conta = self._tipo_conta
         if valor > self._saldos[conta]:
             raise OrdemRecusada("saldo insuficiente")
@@ -146,7 +168,13 @@ class ClienteSimulado:
             self._saldos[conta] += ordem.valor + self._resultado(ordem, entrada, payout).lucro
 
     def aguardar_resultado(self, ordem: Ordem, folga: float = 25.0) -> Resultado:
-        self.dormir_ate(ordem.expiracao + 1)
+        alvo = ordem.expiracao + 1
+        for inicio, fim in self.quedas:
+            if inicio <= alvo and fim > self._t:  # a internet cai antes do resultado chegar
+                self.dormir_ate(inicio)
+                self.conectado = False
+                return Resultado("desconhecido", 0.0, "sem-mensagem")
+        self.dormir_ate(alvo)
         if ordem.id not in self._ordens:
             return Resultado("desconhecido", 0.0, "sem-mensagem")
         _, entrada, payout, _ = self._ordens[ordem.id]

@@ -337,7 +337,8 @@ class IQClient:
                         del self._pend[rid]
             raise ErroConexao(f"O servidor não respondeu a tempo ({'/'.join(pend.nomes)}).")
         if pend.erro:
-            raise ErroIQ(pend.erro)
+            # pedidos interrompidos pela queda da conexão são problema de conexão, não de protocolo
+            raise (ErroConexao if pend.erro.startswith("conexão") else ErroIQ)(pend.erro)
         return pend.resposta or {}
 
     def _requisitar(self, obj: dict, nomes: tuple[str, ...], timeout: float | None = None) -> dict:
@@ -429,12 +430,18 @@ class IQClient:
 
     # ------------------------------------------------------------ dados
     def _buscar_saldos(self) -> list[Saldo]:
+        if not self._vivo:
+            # sem conexão não dá para saber o saldo: devolver o último valor conhecido faria o bot
+            # registrar um resultado errado para uma operação aberta
+            raise ErroConexao("Sem conexão com a corretora.")
         try:
             resp = self._requisitar(self._mensagem("get-balances", "1.0"), nomes=("balances",), timeout=10)
             saldos = interpretar_saldos(resp.get("msg"))
             if saldos:
                 return saldos
         except ErroIQ as exc:
+            if not self._vivo:
+                raise ErroConexao(f"A conexão caiu ao consultar o saldo ({exc}).") from None
             log.debug("get-balances falhou: %s", exc)
         return self._saldos  # o que veio no perfil
 

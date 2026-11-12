@@ -199,6 +199,27 @@ def test_pedido_recusado_pelo_servidor(cliente):
         cliente.velas(1, 60, 3)
 
 
+def test_sem_conexao_o_saldo_nao_e_inventado(cliente):
+    """Devolver o último saldo conhecido faria o bot registrar um resultado errado."""
+    from iq_agent.tipos import ErroConexao
+
+    assert cliente.saldo_ativo(atualizar=True).valor == 10000.0
+    cliente._vivo = False  # a conexão caiu
+    with pytest.raises(ErroConexao):
+        cliente.saldo_ativo(atualizar=True)
+    with pytest.raises(ErroConexao):
+        cliente.saldo_demo(atualizar=True)
+    assert cliente.saldo_ativo().valor == 10000.0  # sem pedir atualização, o valor em memória ainda serve
+
+
+def test_pedido_interrompido_pela_queda_e_erro_de_conexao(cliente):
+    from iq_agent.tipos import ErroConexao
+
+    cliente._ws.send = lambda texto: cliente._falhar_pendentes("conexão caiu")
+    with pytest.raises(ErroConexao, match="conexão caiu"):
+        cliente.velas(1, 60, 3)
+
+
 def test_mensagens_estranhas_nao_derrubam_o_leitor(cliente):
     for lixo in ("", "não é json", "[1, 2]", '{"name": "timeSync", "msg": "abc"}', '{"sem": "nome"}'):
         cliente._tratar(lixo)
