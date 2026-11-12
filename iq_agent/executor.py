@@ -71,6 +71,17 @@ class _Abortar(Exception):
     """Condição que exige parar o bot na hora."""
 
 
+def duracao(segundos: float) -> str:
+    """Tempo por extenso: '5 s', '12 min' ou '3 h 05 min'."""
+    segundos = max(0, round(segundos))
+    if segundos < 90:
+        return f"{segundos} s"
+    minutos = round(segundos / 60)
+    if minutos < 120:
+        return f"{minutos} min"
+    return f"{minutos // 60} h {minutos % 60:02d} min"
+
+
 def inicio_do_dia(ts: float) -> float:
     """Meia-noite (horário local) do dia que contém `ts`."""
     return datetime.fromtimestamp(ts).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
@@ -168,10 +179,22 @@ class Executor:
         return saida
 
     def _atualizar_ativos(self, forcar: bool = False) -> None:
-        agora = self.cliente.agora()
-        if forcar or agora - self._ativos_em >= ATUALIZAR_ATIVOS_S:
-            self._vivos = {a.nome: a for a in self.cliente.ativos() if a.tipo == "turbo"}
+        """Relê a lista de ativos e payouts a cada 10 minutos."""
+        c = self.cliente
+        agora = c.agora()
+        if not (forcar or agora - self._ativos_em >= ATUALIZAR_ATIVOS_S):
+            return
+        try:
+            self._vivos = {a.nome: a for a in c.ativos() if a.tipo == "turbo"}
             self._ativos_em = agora
+        except ErroConexao:
+            # A lista é grande e às vezes a corretora demora a mandar. Se a conexão continua de pé
+            # e já existe uma lista, segue com ela e tenta de novo em 1 minuto, sem tratar como queda.
+            if not self._vivos or not getattr(c, "conectado", False):
+                raise
+            self._ativos_em = agora - ATUALIZAR_ATIVOS_S + 60
+            self._avisar("A corretora demorou a mandar a lista de ativos; sigo com a anterior e tento de novo "
+                         "em 1 minuto.")
 
     def _avisar(self, texto: str) -> None:
         if texto != self._ultimo_aviso:
@@ -204,10 +227,9 @@ class Executor:
                 raise _Abortar(f"a corretora recusou o login ao reconectar ({erro})") from None
             except ErroIQ as erro:
                 if tentativa <= 2 or tentativa % 10 == 0:
-                    minutos = round((c.agora() - inicio) / 60)
-                    self.log(f"Ainda sem conexão há {minutos} min ({erro}). Sigo tentando.")
+                    self.log(f"Ainda sem conexão há {duracao(c.agora() - inicio)} ({erro}). Sigo tentando.")
                 continue
-            self.log(f"Conexão restabelecida depois de {max(1, round((c.agora() - inicio) / 60))} min.")
+            self.log(f"Conexão restabelecida depois de {duracao(c.agora() - inicio)}.")
             self._ativos_em = -math.inf  # a lista de ativos e payouts pode ter mudado
             return True
         return False

@@ -5,10 +5,10 @@ import pytest
 
 from conftest import FIM
 from iq_agent.config import Config
-from iq_agent.executor import Entrada, Executor, conciliar, sinal_atual
+from iq_agent.executor import Entrada, Executor, conciliar, duracao, sinal_atual
 from iq_agent.simulado import ClienteSimulado
 from iq_agent.sintetico import gerar_velas
-from iq_agent.tipos import FRASE_CONTA_REAL, ContaRealBloqueada, ErroIQ, Resultado
+from iq_agent.tipos import FRASE_CONTA_REAL, ContaRealBloqueada, ErroConexao, ErroIQ, Resultado
 
 INICIO = FIM - 1440 * 60  # o "ao vivo" começa um dia antes do fim da série
 
@@ -323,7 +323,7 @@ def test_queda_de_internet_longa_nao_para_o_bot(cfg, banco, cliente):
     texto = "\n".join(mensagens)
     assert "A conexão com a corretora caiu" in texto and "Vou tentar reconectar até ela voltar" in texto
     assert "Ainda sem conexão há" in texto
-    assert "Conexão restabelecida depois de 18" in texto  # ~3 horas = 180 minutos
+    assert "Conexão restabelecida depois de 3 h 0" in texto  # a queda durou 3 horas
     assert "Muitas falhas seguidas" not in texto
     depois = [o for o in banco.operacoes() if o["ts_sinal"] > inicio + 20 * 60 + 3 * 3600]
     assert depois, "o bot precisa voltar a operar quando a conexão volta"
@@ -384,3 +384,43 @@ def test_parar_durante_a_queda_encerra_sem_esperar(cfg, banco, cliente):
     Executor(cfg, banco, cliente, plano(entrada()), log=log, parar=parar).rodar(minutos=None)
     assert any("Parado a pedido" in m for m in mensagens)
     assert cliente.agora() < inicio + 3600  # saiu logo, sem esperar a conexão voltar
+
+
+# ------------------------------------------------------------------ o que o console de 12/11 mostrou
+def test_duracao_por_extenso():
+    assert duracao(5) == "5 s" and duracao(89) == "89 s"  # uma falha de 5 s não é "1 min"
+    assert duracao(600) == "10 min" and duracao(119 * 60) == "119 min"
+    assert duracao(3 * 3600 + 5 * 60) == "3 h 05 min"
+
+
+def test_aviso_de_pausa_aparece_uma_vez_e_nao_a_cada_minuto(cfg, banco, mercado):
+    class SemprePerde(ClienteSimulado):
+        def _resultado(self, ordem, entrada, payout):
+            return Resultado("loss", -ordem.valor, "simulado")
+
+    cfg.risco.max_operacoes_dia, cfg.risco.perda_maxima_diaria = 6, 0.5
+    resumo, mensagens = rodar(cfg, banco, SemprePerde(mercado, inicio_ts=INICIO), plano(entrada()), minutos=400)
+    pausas = [m for m in mensagens if "em pausa" in m]
+    assert resumo["derrotas"] == 6
+    assert len(pausas) == 1 and "volto a operar às" in pausas[0]  # 30 minutos de pausa, uma linha só
+
+
+def test_lista_de_ativos_lenta_nao_e_tratada_como_queda(cfg, banco, mercado):
+    """A corretora demorou a mandar a lista de ativos e o bot anunciou uma queda que não houve."""
+    class ListaLenta(ClienteSimulado):
+        chamadas = 0
+
+        def ativos(self):
+            self.chamadas += 1
+            if 2 <= self.chamadas <= 4:
+                raise ErroConexao("O servidor não respondeu a tempo (initialization-data).")
+            return super().ativos()
+
+    c = ListaLenta(mercado, inicio_ts=INICIO)
+    c.conectar()
+    cfg.risco.max_operacoes_dia = 30
+    resumo, mensagens = rodar(cfg, banco, c, plano(entrada()), minutos=240)
+    texto = " | ".join(mensagens)
+    assert c.chamadas >= 5 and resumo["operacoes"] > 5  # seguiu operando com a lista anterior
+    assert "demorou a mandar a lista de ativos" in texto
+    assert "A conexão com a corretora caiu" not in texto and "Conexão restabelecida" not in texto
