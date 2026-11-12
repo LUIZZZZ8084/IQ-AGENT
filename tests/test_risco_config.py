@@ -87,6 +87,17 @@ def test_pausa_depois_de_perdas_seguidas():
     assert g.pode_operar(1000 + 31 * 60).pode  # a pausa acabou
 
 
+def test_aviso_de_pausa_e_o_mesmo_a_cada_minuto():
+    """Com 'faltam N min' o texto mudava a cada minuto e o registro ganhava 29 linhas iguais."""
+    g = gestor(max_perdas_seguidas=3, pausa_apos_perdas_min=30, perda_maxima_diaria=0.5)
+    for _ in range(3):
+        g.registrar("loss", -1.0, agora=1000)
+    primeiro, depois = g.pode_operar(1000 + 60), g.pode_operar(1000 + 20 * 60)
+    assert not primeiro.pode and primeiro.motivo == depois.motivo
+    assert "pausa de 30 min após 3 perdas seguidas" in primeiro.motivo and "volto a operar às" in primeiro.motivo
+    assert "faltam" not in primeiro.motivo
+
+
 def test_vitoria_zera_a_contagem_de_perdas():
     g = gestor(perda_maxima_diaria=0.5)
     g.registrar("loss", -1.0, 0)

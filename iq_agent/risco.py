@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 
 from .config import Operacao, Risco
 from .estatistica import kelly
@@ -52,8 +53,11 @@ class GestorRisco:
         if c.meta_diaria > 0 and self.lucro >= c.meta_diaria * self.saldo_inicial:
             return Decisao(False, f"meta diária atingida ({self.lucro:+.2f})", True)
         if agora < self.pausa_ate:
-            return Decisao(False, f"em pausa após {c.max_perdas_seguidas} perdas seguidas "
-                                  f"(faltam {math.ceil((self.pausa_ate - agora) / 60)} min)")
+            # O texto traz a hora da volta, e não os minutos que faltam, para ser o mesmo a cada
+            # minuto: assim o registro mostra o aviso uma vez só, em vez de uma linha por minuto.
+            volta = datetime.fromtimestamp(self.pausa_ate).strftime("%H:%M")
+            return Decisao(False, f"em pausa de {c.pausa_apos_perdas_min} min após {c.max_perdas_seguidas} "
+                                  f"perdas seguidas; volto a operar às {volta}")
         return Decisao(True)
 
     def valor(self, saldo: float, p_inf: float | None, payout: float, exploracao: bool = False,
