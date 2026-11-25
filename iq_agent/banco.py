@@ -136,6 +136,22 @@ class Banco:
             "hipoteses": json.loads(l["hipoteses"]), "plano": json.loads(l["plano"]),
         }
 
+    def pesquisas_anteriores(self, antes_de: float, limite: int = 60):
+        """Pesquisas gravadas antes de `antes_de`, da mais recente para a mais antiga.
+
+        Gera (ts, carregar), em que carregar() devolve a lista de hipóteses. A leitura é
+        adiada porque cada lista é grande e quem chama costuma usar só algumas pesquisas.
+        """
+        linhas = self.con.execute("SELECT run_id, ts FROM pesquisas WHERE ts<? ORDER BY ts DESC LIMIT ?",
+                                  (int(antes_de), int(limite))).fetchall()
+
+        def carregar(run_id: str) -> list[dict]:
+            l = self.con.execute("SELECT hipoteses FROM pesquisas WHERE run_id=?", (run_id,)).fetchone()
+            return json.loads(l["hipoteses"]) if l else []
+
+        for l in linhas:
+            yield int(l["ts"]), (lambda run_id=l["run_id"]: carregar(run_id))
+
     # -------------------------------------------------------------- operações
     def registrar_operacao(self, **campos: Any) -> int:
         if isinstance(campos.get("config"), dict):

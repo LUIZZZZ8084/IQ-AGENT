@@ -11,6 +11,7 @@ from pathlib import Path
 from .banco import Banco
 from .cenario import Cenario, ler
 from .config import Config
+from .ficha import descrever as descrever_ficha
 from .estatistica import breakeven, wilson, z_unilateral
 from .estrategias import NOMES_CURTOS
 from . import ml
@@ -338,12 +339,14 @@ def _bloco_plano(pesquisa: dict, cfg: Config) -> str:
             _selo("bom", "aprovada") if aprovada else _selo("alerta", "exploração"),
             f"<strong>{_e(e['ativo'])}</strong>", _e(e["modo"]), _e(_estrategia(e["estrategia"])),
             _e(_config(e)), _e(_sessao(e["sessao"])), _pct(e["taxa"]), _pct(e["p_inf"]), _pct(e["breakeven"]),
-            _pct(e["payout"], 0), _num(e["n_teste"], 0), _e(como),
+            _pct(e["payout"], 0), _num(e["n_teste"], 0), _e(descrever_ficha(e.get("ficha")) or "—"), _e(como),
         ])
     tabela = _tabela(["Situação", "Ativo", "Modo", "Estratégia", "Configuração", "Horário", "Acerto",
-                      "Pior caso", "Breakeven", "Payout", "Operações", "Quanto investir"], linhas, {6, 7, 8, 9, 10})
+                      "Pior caso", "Breakeven", "Payout", "Operações", "Memória", "Quanto investir"], linhas, {6, 7, 8, 9, 10})
     nota = ("“Acerto” é a taxa nas janelas de teste (dados que a estratégia não viu ao ser escolhida). "
             "“Pior caso” é o limite inferior do intervalo de confiança: o tamanho da operação é calculado com ele. "
+            "Quando já há operações ao vivo, o pior caso junta o teste e o ao vivo. "
+            "“Memória” resume o que as pesquisas dos dias anteriores disseram da estratégia e como ela foi ao vivo. "
             "Entradas de exploração NÃO têm vantagem comprovada e nunca são operadas na conta real.")
     return f'<section class="cartao" id="plano"><h2>Plano do dia</h2>{tabela}<p class="nota">{_e(nota)}</p></section>'
 
