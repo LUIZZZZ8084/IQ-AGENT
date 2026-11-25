@@ -21,10 +21,10 @@ sozinho, primeiro na conta demo e, quando você liberar, na conta real.
 2. Dê dois cliques em `IQ-AGENT.bat`. Abre o painel de controle.
 3. Clique em **Diagnóstico**. O painel pede o e-mail e a senha da IQ Option (ficam só na
    memória, até você fechar a janela) e confere login, saldos, ativos e velas.
-4. Clique em **1. Atualizar mercado**. Na primeira vez leva cerca de 45 minutos: ele baixa
-   30 dias de velas reais de 1 minuto de todos os ativos turbo abertos (cerca de 100) e
-   roda a pesquisa. Nos dias seguintes baixa só o que falta e leva poucos minutos. O
-   banco de dados ocupa em torno de 350 MB.
+4. Clique em **1. Atualizar mercado**. Na primeira vez leva cerca de 1 a 2 horas: ele
+   baixa 60 dias de velas reais de 1 minuto de até 150 ativos turbo e roda a pesquisa.
+   Nos dias seguintes baixa só o que falta e leva poucos minutos. O banco de dados ocupa
+   em torno de 1,5 GB.
 5. Clique em **Abrir relatório** para ver o plano do dia.
 6. Clique em **2. Iniciar bot**. Ele opera na conta demo até você clicar em **Parar bot**.
 
@@ -48,6 +48,7 @@ O `.env` nunca vai para o GitHub.
 | Pesquisa | Testa cada estratégia em cada ativo com walk-forward: a configuração é escolhida só com dados antigos e julgada só em dados que ela não viu. |
 | Modelo de aprendizado de máquina | Treina no seu computador, com as velas reais, um modelo por grupo de ativos e o submete ao mesmo teste das regras. |
 | Filtro estatístico | Uma hipótese só é aprovada se a taxa de acerto fora da amostra superar o breakeven com 95% de confiança e sobreviver à correção para múltiplos testes (Benjamini-Hochberg). |
+| Ficha de cada estratégia | A memória entre um dia e outro: uma aprovação só vale quando se repete em pesquisas de dias diferentes, e o resultado ao vivo soma ao do teste. Uma estratégia que vai bem pior ao vivo do que o teste prometia sai do plano. |
 | Plano do dia | Lista as estratégias aprovadas e, à parte, candidatas de exploração (sem vantagem comprovada, só demo). |
 | Executor | A cada fechamento de vela lê os dados ao vivo, calcula o sinal com a mesma função do backtest, abre a operação, espera o resultado e anota no diário. |
 | Relatório | Página HTML com o plano, o ranking, a leitura do cenário atual de cada ativo e o desempenho ao vivo comparado ao backtest. |

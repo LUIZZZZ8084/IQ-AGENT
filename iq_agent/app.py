@@ -65,7 +65,9 @@ def atualizar_mercado(cfg: Config, banco: Banco, cliente, log: Log) -> dict:
     resultado = pesquisar(banco, cfg, log, agora=cliente.agora())
     r = resultado["resumo"]
     log(f"Pesquisa concluída: {r['hipoteses']} hipóteses, {r['testaveis']} com dados suficientes, "
-        f"{r['aprovadas']} aprovada(s).")
+        f"{r['aprovadas']} aprovada(s)"
+        + (f", {r['confirmando']} aguardando confirmação" if r.get("confirmando") else "")
+        + (f", {r['fora_pela_ficha']} fora pelo resultado ao vivo" if r.get("fora_pela_ficha") else "") + ".")
     caminho = gerar(banco, cfg, agora=cliente.agora())
     log(f"Relatório salvo em {caminho}")
     return resultado

@@ -3,7 +3,7 @@
 # permitir E voce confirmar digitando a frase pedida, a cada execucao.
 
 [coleta]
-dias_historico = 30        # quantos dias de velas de 1 minuto manter por ativo
+dias_historico = 60        # quantos dias de velas de 1 minuto manter e estudar por ativo
 payout_minimo = 0.70       # ignora ativos pagando menos que isso (0.70 = 70%)
 max_ativos = 150           # limite de ativos acompanhados (150 cobre todos os abertos; maximo 200)
 incluir_otc = true         # ativos OTC (fim de semana / precos da corretora)
@@ -14,7 +14,7 @@ pausa_entre_pedidos = 0.2  # segundos entre pedidos ao servidor
 # "M1>1" = velas de 1 min, expiracao de 1 min. "M5>5" = velas de 5 min, expiracao 5 min.
 modos = ["M1>1", "M1>5", "M5>5"]
 estrategias = []           # vazio = todas
-n_folds = 5                # quantas janelas de teste fora da amostra
+n_folds = 12               # quantas janelas de teste fora da amostra (12 x 3 dias = 36 dias de teste)
 dias_teste = 3.0           # tamanho de cada janela de teste, em dias
 min_trades_treino = 150    # minimo de operacoes no treino para escolher uma configuracao
 min_trades_teste = 100     # minimo de operacoes fora da amostra para julgar
@@ -22,6 +22,7 @@ fdr_q = 0.10               # taxa maxima de falsas descobertas (Benjamini-Hochbe
 confianca = 0.95           # confianca do intervalo da taxa de acerto
 slippage_frac = 0.02       # entrada pior que o ideal, em fracao do corpo mediano da vela
 payout_padrao = 0.80       # usado quando o payout do ativo e desconhecido
+dias_confirmacao = 2       # a aprovacao precisa se repetir em pesquisas de 2 dias diferentes
 
 [risco]
 risco_por_operacao = 0.01  # teto por operacao, em fracao do saldo (0.01 = 1%)

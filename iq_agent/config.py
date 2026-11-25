@@ -36,6 +36,7 @@ class Pesquisa:
     confianca: float = 0.95
     slippage_frac: float = 0.02
     payout_padrao: float = 0.80
+    dias_confirmacao: int = 1  # em quantas pesquisas de dias diferentes a aprovação precisa aparecer
 
 
 @dataclass
@@ -147,6 +148,7 @@ def validar(cfg: Config) -> Config:
     _entre("pesquisa.confianca", p.confianca, 0.5, 0.999)
     _entre("pesquisa.slippage_frac", p.slippage_frac, 0.0, 1.0)
     _entre("pesquisa.payout_padrao", p.payout_padrao, 0.1, 1.0)
+    _entre("pesquisa.dias_confirmacao", p.dias_confirmacao, 1, 10)
     # Teto de 5% por operação: acima disso uma sequência ruim comum quebra a banca.
     _entre("risco.risco_por_operacao", r.risco_por_operacao, 0.0005, 0.05)
     _entre("risco.kelly_fracao", r.kelly_fracao, 0.01, 1.0)

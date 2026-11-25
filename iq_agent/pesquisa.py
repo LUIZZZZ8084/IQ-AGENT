@@ -57,6 +57,7 @@ class Hipotese:
     aprovado: bool = False
     situacao: str = ""
     detalhe: dict | None = None  # dados extras (ex.: ativos de um grupo do modelo de aprendizado de máquina)
+    ficha: dict | None = None  # memória dos dias anteriores e placar ao vivo (ver iq_agent/ficha.py)
 
     @property
     def n(self) -> int:
@@ -179,13 +180,22 @@ def finalizar(hipoteses: list[Hipotese], pq: Pesquisa) -> None:
             h.situacao = "sem vantagem comprovada"
 
 
+def _pior_caso(h: Hipotese) -> float | None:
+    """Pior caso usado no tamanho da operação: com o placar ao vivo somado, quando existe."""
+    combinado = (h.ficha or {}).get("pior_caso_combinado")
+    return combinado if combinado is not None else h.wilson_inf
+
+
 def _entrada(h: Hipotese, tipo: str) -> dict:
     tf_min, exp_min = interpretar_modo(h.modo)
+    p_inf = _pior_caso(h)
     return {
         "tipo": tipo, "ativo": h.ativo, "modo": h.modo, "tf": tf_min * 60, "exp_min": exp_min,
         "estrategia": h.estrategia, "params": h.config["params"], "sessao": h.config["sessao"],
         "vol": h.config["vol"], "payout": h.payout, "breakeven": h.breakeven, "n_teste": h.n,
-        "taxa": h.taxa, "p_inf": h.wilson_inf, "ev": h.ev, "ev_inf": h.ev_inf, "q_valor": h.q_valor,
+        "taxa": h.taxa, "p_inf": p_inf, "p_inf_teste": h.wilson_inf, "ev": h.ev,
+        "ev_inf": valor_esperado(p_inf, h.payout) if p_inf is not None else h.ev_inf, "q_valor": h.q_valor,
+        "ficha": h.ficha,
     }
 
 
@@ -206,18 +216,31 @@ def _entradas_do_modelo(h: Hipotese, tipo: str, info_ativos: dict | None, limite
             "vol": h.config["vol"], "payout": payout, "breakeven": breakeven(payout), "n_teste": h.n,
             "taxa": h.taxa, "p_inf": h.wilson_inf, "ev": valor_esperado(h.taxa, payout),
             "ev_inf": valor_esperado(h.wilson_inf, payout), "q_valor": h.q_valor, "grupo": h.ativo,
+            "ficha": h.ficha,
         })
     return entradas
 
 
 def montar_plano(hipoteses: list[Hipotese], max_exploracao: int, info_ativos: dict | None = None,
                  max_ativos_modelo: int = 10) -> list[dict]:
-    """Entradas do plano: primeiro as aprovadas, depois as candidatas de exploração (só demo)."""
+    """Entradas do plano: primeiro as aprovadas, depois as candidatas de exploração (só demo).
+
+    Entre as candidatas vêm primeiro as aprovadas hoje que aguardam confirmação; as demais
+    seguem a ordem do valor esperado com o placar ao vivo somado. Quem a ficha tirou do
+    plano não entra.
+    """
+    from .ficha import nota_de_ordem
     from .ml import NOME as MODELO
 
-    aprovadas = sorted((h for h in hipoteses if h.aprovado), key=lambda h: h.ev_inf, reverse=True)
-    candidatas = sorted((h for h in hipoteses if h.testavel and not h.aprovado and h.config is not None),
-                        key=lambda h: h.ev, reverse=True)[:max_exploracao]
+    def ficha(h: Hipotese) -> dict:
+        return h.ficha or {}
+
+    aprovadas = sorted((h for h in hipoteses if h.aprovado),
+                       key=lambda h: valor_esperado(_pior_caso(h), h.payout), reverse=True)
+    candidatas = sorted((h for h in hipoteses if h.testavel and not h.aprovado and h.config is not None
+                         and not ficha(h).get("fora")),
+                        key=lambda h: (bool(ficha(h).get("confirmando")), nota_de_ordem(h)),
+                        reverse=True)[:max_exploracao]
     plano = []
     for tipo, lista, limite in (("aprovado", aprovadas, max_ativos_modelo), ("exploracao", candidatas, 2)):
         for h in lista:
@@ -226,6 +249,36 @@ def montar_plano(hipoteses: list[Hipotese], max_exploracao: int, info_ativos: di
             else:
                 plano.append(_entrada(h, tipo))
     return plano
+
+
+def usar_fichas(banco: Banco, cfg: Config, hipoteses: list[Hipotese], agora: float,
+                log: Callable[[str], None] = print) -> dict:
+    """Aplica a memória dos dias anteriores e o placar ao vivo (ver iq_agent/ficha.py)."""
+    from . import ficha
+    from .estrategias import NOMES_CURTOS
+
+    pq = cfg.pesquisa
+    fichas, dias = ficha.montar_fichas(banco, agora, dias_vivo=cfg.coleta.dias_historico)
+    efeito = ficha.aplicar(hipoteses, fichas, pq.dias_confirmacao, z_unilateral(pq.confianca),
+                           cfg.operacao.min_ops_para_suspender)
+    if dias:
+        log(f"Memória: comparei com as pesquisas de {len(dias)} dia(s) anterior(es) "
+            f"({datetime.strptime(dias[0], '%Y-%m-%d'):%d/%m} a {datetime.strptime(dias[-1], '%Y-%m-%d'):%d/%m}) "
+            f"e com as operações ao vivo dos últimos {cfg.coleta.dias_historico} dias.")
+    else:
+        log("Memória: ainda não há pesquisas de dias anteriores para comparar.")
+
+    def nome(h: Hipotese) -> str:
+        return f"{NOMES_CURTOS.get(h.estrategia, h.estrategia)} em {h.ativo} {h.modo}"
+
+    for h in efeito["confirmando"]:
+        log(f"  {nome(h)}: passou no teste hoje, mas só vale como aprovada se passar de novo em "
+            f"{pq.dias_confirmacao - 1 - (h.ficha or {}).get('aprovacoes_seguidas', 0)} pesquisa(s) de outro dia. "
+            f"Até lá, entra só como exploração na demo.")
+    for h in efeito["fora"]:
+        if h.config is not None and h.testavel:
+            log(f"  {nome(h)}: fora do plano porque {h.ficha['fora']}.")
+    return {"dias": len(dias), **efeito}
 
 
 def pesquisar(banco: Banco, cfg: Config, log: Callable[[str], None] = print,
@@ -292,6 +345,7 @@ def pesquisar(banco: Banco, cfg: Config, log: Callable[[str], None] = print,
             modelo.fechar()
 
     finalizar(hipoteses, pq)
+    memoria = usar_fichas(banco, cfg, hipoteses, agora, log)
     testaveis = [h for h in hipoteses if h.testavel]
     resumo = {
         "ativos": usados, "velas": total_velas, "periodo": [ts_min, ts_max],
@@ -302,6 +356,9 @@ def pesquisar(banco: Banco, cfg: Config, log: Callable[[str], None] = print,
         "taxa_media": float(np.mean([h.taxa for h in testaveis])) if testaveis else None,
         "breakeven_medio": float(np.mean([h.breakeven for h in testaveis])) if testaveis else None,
         "fdr_q": pq.fdr_q, "confianca": pq.confianca,
+        "aprovadas_no_teste": sum(h.aprovado for h in hipoteses) + len(memoria["confirmando"]),
+        "confirmando": len(memoria["confirmando"]), "fora_pela_ficha": len(memoria["fora"]),
+        "dias_lembrados": memoria["dias"], "dias_historico": cfg.coleta.dias_historico,
     }
     run_id = datetime.fromtimestamp(agora, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     plano = {"run_id": run_id, "gerado_em": int(agora),

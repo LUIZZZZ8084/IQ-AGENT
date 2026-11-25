@@ -15,10 +15,10 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable
 
-from . import ml
+from . import ficha, ml
 from .banco import Banco
 from .config import Config
-from .estatistica import wilson, z_unilateral
+from .estatistica import z_unilateral
 from .estrategias import ESTRATEGIAS, NOMES_CURTOS, VELAS_AQUECIMENTO
 from .filtros import descrever_sessao, mascara_vol, razao_vol, sessao_inclui
 from .iqclient import expiracao_turbo
@@ -47,6 +47,8 @@ class Entrada:
     vol: str
     breakeven: float
     p_inf: float | None
+    taxa: float | None = None  # acerto nas janelas de teste da pesquisa
+    ficha: dict | None = None  # memória dos dias anteriores e placar ao vivo, quando a pesquisa gravou
 
     @property
     def chave(self) -> tuple[str, str, str]:
@@ -60,7 +62,8 @@ class Entrada:
     def de_dict(cls, d: dict) -> "Entrada":
         return cls(tipo=d["tipo"], ativo=d["ativo"], modo=d["modo"], tf=int(d["tf"]), exp_min=int(d["exp_min"]),
                    estrategia=d["estrategia"], params=dict(d["params"]), sessao=d["sessao"], vol=d["vol"],
-                   breakeven=float(d["breakeven"]), p_inf=d.get("p_inf"))
+                   breakeven=float(d["breakeven"]), p_inf=d.get("p_inf"), taxa=d.get("taxa"),
+                   ficha=d.get("ficha"))
 
 
 class _Encerrar(Exception):
@@ -163,19 +166,19 @@ class Executor:
                 and (e.estrategia != ml.NOME or ml.carregar_modelo(e.params.get("arquivo")) is not None)]
 
     def _suspensas(self, entradas: list[Entrada], agora: float) -> dict[tuple, str]:
-        """Entradas cujo resultado ao vivo já mostra, com confiança, taxa abaixo do breakeven."""
-        placar: dict[tuple, list[int]] = {}
-        for o in self.banco.operacoes(desde=agora - 14 * 86400, conta=self.conta):
-            if o["status"] in ("win", "loss"):
-                p = placar.setdefault((o["ativo"], o["modo"], o["estrategia"]), [0, 0])
-                p[0] += o["status"] == "win"
-                p[1] += 1
+        """Entradas que o placar ao vivo manda tirar do plano (mesma regra da ficha da pesquisa).
+
+        A pesquisa já aplica a regra uma vez por dia; aqui ela é refeita a cada renovação do
+        plano para pegar a piora que acontece durante o dia.
+        """
+        placar = ficha.placar_ao_vivo(self.banco, agora - self.cfg.coleta.dias_historico * 86400)
         z = z_unilateral(self.cfg.pesquisa.confianca)
         saida = {}
         for e in entradas:
-            vitorias, n = placar.get(e.chave, (0, 0))
-            if n >= self.cfg.operacao.min_ops_para_suspender and wilson(vitorias, n, z)[1] < e.breakeven:
-                saida[e.chave] = f"{vitorias}/{n} acertos, precisa de {e.breakeven:.1%}"
+            v, d, _, _ = placar.get(e.chave, (0, 0, 0, 0.0))
+            motivo = ficha.julgar_ao_vivo(v, v + d, e.taxa, e.breakeven, z, self.cfg.operacao.min_ops_para_suspender)
+            if motivo:
+                saida[e.chave] = motivo
         return saida
 
     def _atualizar_ativos(self, forcar: bool = False) -> None:
@@ -260,8 +263,9 @@ class Executor:
         for e in entradas:
             nome = NOMES_CURTOS.get(e.estrategia, e.estrategia)
             tipo = "aprovada" if e.tipo == "aprovado" else "exploração"
+            memoria = ficha.descrever(e.ficha)
             self.log(f"  - {nome} em {e.ativo}: expira em {e.exp_min} min, opera em {descrever_sessao(e.sessao)} "
-                     f"({tipo})")
+                     f"({tipo}{'; ' + memoria if memoria else ''})")
 
     # ------------------------------------------------------------ laço principal
     def rodar(self, minutos: float | None = None) -> dict:
